@@ -24,6 +24,8 @@ USE rrgroups;
 SET FOREIGN_KEY_CHECKS = 0;
 DROP TABLE IF EXISTS push_subscriptions;
 DROP TABLE IF EXISTS notifications;
+DROP TABLE IF EXISTS fund_payments;
+DROP TABLE IF EXISTS funds;
 DROP TABLE IF EXISTS chit_members;
 DROP TABLE IF EXISTS chit_groups;
 DROP TABLE IF EXISTS collections;
@@ -191,6 +193,28 @@ CREATE TABLE funds (
   status           ENUM('active','matured','closed') NOT NULL DEFAULT 'active',
   created_at       DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_funds_customer (customer_id)
+) ENGINE=InnoDB;
+
+-- ---------- fund_payments (passbook — one row per collection) ----------
+CREATE TABLE fund_payments (
+  id             CHAR(36)     NOT NULL PRIMARY KEY,
+  fund_id        CHAR(36)     NOT NULL,
+  fund_number    VARCHAR(64)  NULL,
+  customer_id    CHAR(36)     NULL,
+  customer_name  VARCHAR(191) NULL,
+  week_no        INT          NOT NULL DEFAULT 0,   -- which weekly instalment this covers
+  amount         DECIMAL(14,2) NOT NULL DEFAULT 0,
+  balance_after  DECIMAL(14,2) NOT NULL DEFAULT 0,  -- total collected after this entry
+  payment_method ENUM('cash','upi','card','bank','cheque') NOT NULL DEFAULT 'cash',
+  payment_date   DATE         NULL,
+  agent_id       CHAR(36)     NULL,
+  agent_name     VARCHAR(191) NULL,
+  notes          TEXT         NULL,
+  created_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_fund_payments_fund (fund_id),
+  INDEX idx_fund_payments_customer (customer_id),
+  CONSTRAINT fk_fund_payments_fund FOREIGN KEY (fund_id)
+    REFERENCES funds(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
 -- ---------- notifications ----------

@@ -108,4 +108,33 @@ if (!$colExists('weeks') && $colExists('days')) {
     echo "funds.days renamed to weeks.\n";
 }
 
+// 7. Create the fund_payments passbook table (one row per collection) if missing.
+$hasFundPayments = $pdo->query(
+    "SELECT COUNT(*) FROM information_schema.TABLES
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'fund_payments'"
+)->fetchColumn();
+if (!$hasFundPayments) {
+    $pdo->exec("CREATE TABLE fund_payments (
+        id             CHAR(36)     NOT NULL PRIMARY KEY,
+        fund_id        CHAR(36)     NOT NULL,
+        fund_number    VARCHAR(64)  NULL,
+        customer_id    CHAR(36)     NULL,
+        customer_name  VARCHAR(191) NULL,
+        week_no        INT          NOT NULL DEFAULT 0,
+        amount         DECIMAL(14,2) NOT NULL DEFAULT 0,
+        balance_after  DECIMAL(14,2) NOT NULL DEFAULT 0,
+        payment_method ENUM('cash','upi','card','bank','cheque') NOT NULL DEFAULT 'cash',
+        payment_date   DATE         NULL,
+        agent_id       CHAR(36)     NULL,
+        agent_name     VARCHAR(191) NULL,
+        notes          TEXT         NULL,
+        created_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_fund_payments_fund (fund_id),
+        INDEX idx_fund_payments_customer (customer_id)
+    ) ENGINE=InnoDB");
+    echo "fund_payments table created.\n";
+} else {
+    echo "fund_payments table already present.\n";
+}
+
 echo "Migration complete.\n";

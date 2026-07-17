@@ -18,6 +18,7 @@ abstract class Model
         'chit_groups'        => ChitGroup::class,
         'chit_members'       => ChitMember::class,
         'funds'              => Fund::class,
+        'fund_payments'      => FundPayment::class,
         'notifications'      => Notification::class,
         'settings'           => Setting::class,
         'push_subscriptions' => PushSubscription::class,

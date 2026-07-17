@@ -126,6 +126,23 @@ export interface Fund {
   created_at: string;
 }
 
+export interface FundPayment {
+  id: string;
+  fund_id: string;
+  fund_number: string | null;
+  customer_id: string | null;
+  customer_name: string | null;
+  week_no: number;
+  amount: number;
+  balance_after: number;
+  payment_method: 'cash' | 'upi' | 'card' | 'bank' | 'cheque';
+  payment_date: string | null;
+  agent_id: string | null;
+  agent_name: string | null;
+  notes: string | null;
+  created_at: string;
+}
+
 export interface Notification {
   id: string;
   user_id: string | null;

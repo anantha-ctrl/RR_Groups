@@ -2,12 +2,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   PiggyBank, Plus, X, Loader2, Calendar, Coins, Gift, Wallet,
   TrendingUp, Check, AlertCircle, Search, Pencil, Trash2, HandCoins, RefreshCw,
+  BookOpen, Inbox,
 } from 'lucide-react';
 import { supabase } from '../supabaseClient';
 import { useAuth } from '../auth';
 import { formatCurrency, formatDate } from '../calc';
 import { PageHeader, EmptyState, Badge } from '../components/ui';
-import type { Fund, Customer } from '../types';
+import type { Fund, FundPayment, Customer } from '../types';
+
+const PAYMENT_METHODS = ['cash', 'upi', 'card', 'bank', 'cheque'] as const;
+
+// What the customer actually deposits (weekly × weeks). The bonus is NOT deposited —
+// it is credited on top only at maturity/settlement. So all collection targets,
+// progress and "remaining" are measured against the deposit, not the payout.
+function depositTarget(f: Fund): number {
+  return Number(f.deposit_amount) || Number(f.weekly_amount) * Number(f.weeks);
+}
 
 function todayISO() {
   const d = new Date();
@@ -16,6 +26,21 @@ function todayISO() {
 
 function newFundNumber() {
   return `FND-${Math.floor(100000 + Math.random() * 900000)}`;
+}
+
+// Parse a 'YYYY-MM-DD' as a *local* midnight date (avoids UTC off-by-one).
+function parseISODate(s: string): Date {
+  const [y, m, d] = s.slice(0, 10).split('-').map(Number);
+  return new Date(y, (m || 1) - 1, d || 1);
+}
+function toISODateLocal(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+function weekdayShort(d: Date): string {
+  return d.toLocaleDateString('en-IN', { weekday: 'short' });
 }
 
 export default function FundsScreen() {
@@ -31,6 +56,7 @@ export default function FundsScreen() {
   const [formOpen, setFormOpen] = useState(false);
   const [editFund, setEditFund] = useState<Fund | null>(null);
   const [collectTarget, setCollectTarget] = useState<Fund | null>(null);
+  const [passbookTarget, setPassbookTarget] = useState<Fund | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Fund | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const activeRef = useRef(true);
@@ -174,6 +200,7 @@ export default function FundsScreen() {
               onEdit={() => { setEditFund(f); setFormOpen(true); }}
               onDelete={() => setDeleteTarget(f)}
               onCollect={() => setCollectTarget(f)}
+              onPassbook={() => setPassbookTarget(f)}
             />
           ))}
         </div>
@@ -195,6 +222,7 @@ export default function FundsScreen() {
       {collectTarget && (
         <CollectModal
           fund={collectTarget}
+          agentId={profile?.id ?? null}
           agentName={profile?.full_name ?? null}
           onClose={() => setCollectTarget(null)}
           onSaved={(amount) => {
@@ -202,6 +230,13 @@ export default function FundsScreen() {
             setToast(`Collected ${formatCurrency(amount)}.`);
             load();
           }}
+        />
+      )}
+
+      {passbookTarget && (
+        <PassbookModal
+          fund={passbookTarget}
+          onClose={() => setPassbookTarget(null)}
         />
       )}
 
@@ -219,7 +254,7 @@ export default function FundsScreen() {
 }
 
 function FundCard({
-  fund, showCustomer, canManage, canCollect, onEdit, onDelete, onCollect,
+  fund, showCustomer, canManage, canCollect, onEdit, onDelete, onCollect, onPassbook,
 }: {
   fund: Fund;
   showCustomer: boolean;
@@ -228,10 +263,12 @@ function FundCard({
   onEdit: () => void;
   onDelete: () => void;
   onCollect: () => void;
+  onPassbook: () => void;
 }) {
-  const progress = fund.total_amount > 0 ? Math.min((fund.collected_amount / fund.total_amount) * 100, 100) : 0;
+  const target = depositTarget(fund);
+  const progress = target > 0 ? Math.min((fund.collected_amount / target) * 100, 100) : 0;
   const tone = fund.status === 'matured' ? 'green' : fund.status === 'closed' ? 'gray' : 'blue';
-  const remaining = Math.max(0, Number(fund.total_amount) - Number(fund.collected_amount));
+  const remaining = Math.max(0, target - Number(fund.collected_amount));
   return (
     <div className="card p-5 flex flex-col">
       <div className="flex items-start justify-between mb-3">
@@ -272,7 +309,7 @@ function FundCard({
       </div>
 
       <div className="flex items-center justify-between text-[11px] text-ink-400 mb-1.5">
-        <span>Collected {formatCurrency(fund.collected_amount)}</span>
+        <span>Deposited {formatCurrency(fund.collected_amount)} / {formatCurrency(target)}</span>
         <span>{progress.toFixed(0)}%</span>
       </div>
       <div className="w-full h-2 bg-ink-100 rounded-full overflow-hidden">
@@ -284,36 +321,41 @@ function FundCard({
         <span className="flex items-center gap-1"><Gift className="w-3 h-3" /> {formatDate(fund.maturity_date)}</span>
       </div>
 
-      {/* Role actions */}
-      {(canManage || (canCollect && fund.status === 'active')) && (
-        <div className="flex items-center gap-2 mt-4 pt-4 border-t border-ink-100">
-          {canCollect && fund.status === 'active' && (
+      {/* Actions — Passbook is available to everyone; role actions follow */}
+      <div className="flex items-center gap-2 mt-4 pt-4 border-t border-ink-100">
+        <button
+          onClick={onPassbook}
+          className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-ink-200 text-ink-600 hover:border-brand-300 hover:text-brand-700 text-sm font-semibold transition-colors"
+        >
+          <BookOpen className="w-4 h-4" /> Passbook
+        </button>
+        {canCollect && fund.status === 'active' && (
+          <button
+            onClick={onCollect}
+            className="btn-primary flex-1 justify-center !py-2 text-sm"
+          >
+            <HandCoins className="w-4 h-4" /> Collect
+          </button>
+        )}
+        {canManage && (
+          <>
             <button
-              onClick={onCollect}
-              className="btn-primary flex-1 justify-center !py-2 text-sm"
+              onClick={onEdit}
+              className="inline-flex items-center justify-center w-9 h-9 rounded-lg border border-ink-200 text-ink-600 hover:border-brand-300 hover:text-brand-700 transition-colors"
+              title="Edit"
             >
-              <HandCoins className="w-4 h-4" /> Collect
+              <Pencil className="w-4 h-4" />
             </button>
-          )}
-          {canManage && (
-            <>
-              <button
-                onClick={onEdit}
-                className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-ink-200 text-ink-600 hover:border-brand-300 hover:text-brand-700 text-sm font-semibold transition-colors"
-              >
-                <Pencil className="w-4 h-4" /> Edit
-              </button>
-              <button
-                onClick={onDelete}
-                className="inline-flex items-center justify-center w-9 h-9 rounded-lg border border-ink-200 text-ink-400 hover:border-rose-300 hover:text-rose-600 transition-colors"
-                title="Delete"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-            </>
-          )}
-        </div>
-      )}
+            <button
+              onClick={onDelete}
+              className="inline-flex items-center justify-center w-9 h-9 rounded-lg border border-ink-200 text-ink-400 hover:border-rose-300 hover:text-rose-600 transition-colors"
+              title="Delete"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </>
+        )}
+      </div>
       {canCollect && fund.status === 'active' && remaining > 0 && (
         <p className="text-[11px] text-ink-400 mt-2 text-center">{formatCurrency(remaining)} remaining to maturity</p>
       )}
@@ -456,15 +498,19 @@ function FundForm({
 }
 
 function CollectModal({
-  fund, agentName, onClose, onSaved,
+  fund, agentId, agentName, onClose, onSaved,
 }: {
   fund: Fund;
+  agentId: string | null;
   agentName: string | null;
   onClose: () => void;
   onSaved: (amount: number) => void;
 }) {
-  const remaining = Math.max(0, Number(fund.total_amount) - Number(fund.collected_amount));
+  const target = depositTarget(fund);
+  const remaining = Math.max(0, target - Number(fund.collected_amount));
   const [amount, setAmount] = useState(String(Math.min(Number(fund.weekly_amount), remaining) || fund.weekly_amount));
+  const [method, setMethod] = useState<FundPayment['payment_method']>('cash');
+  const [payDate, setPayDate] = useState(todayISO());
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const amt = parseFloat(amount) || 0;
@@ -472,17 +518,35 @@ function CollectModal({
   async function save() {
     setError(null);
     if (amt <= 0) { setError('Enter a valid amount.'); return; }
-    if (amt > remaining) { setError(`Only ${formatCurrency(remaining)} left before maturity.`); return; }
+    if (amt > remaining) { setError(`Only ${formatCurrency(remaining)} left to fully fund this deposit.`); return; }
     setSaving(true);
     const newCollected = Number(fund.collected_amount) + amt;
-    const matured = newCollected >= Number(fund.total_amount);
+    const matured = newCollected >= target; // deposit complete → matured; bonus credited at payout
+    // 1) Update the fund's running total + status.
     const { error: err } = await supabase.from('funds').update({
       collected_amount: newCollected,
       status: matured ? 'matured' : fund.status,
     }).eq('id', fund.id);
+    if (err) { setSaving(false); setError(err.message || 'Could not record the collection.'); return; }
+    // 2) Write the passbook entry (one row per collection).
+    const weekNo = fund.weekly_amount > 0
+      ? Math.min(Math.floor(Number(fund.collected_amount) / Number(fund.weekly_amount)) + 1, Number(fund.weeks))
+      : 0;
+    const { error: pErr } = await supabase.from('fund_payments').insert({
+      fund_id: fund.id,
+      fund_number: fund.fund_number,
+      customer_id: fund.customer_id,
+      customer_name: fund.customer_name,
+      week_no: weekNo,
+      amount: amt,
+      balance_after: newCollected,
+      payment_method: method,
+      payment_date: payDate,
+      agent_id: agentId,
+      agent_name: agentName,
+    });
     setSaving(false);
-    if (err) { setError(err.message || 'Could not record the collection.'); return; }
-    void agentName;
+    if (pErr) { setError(pErr.message || 'Collection saved, but the passbook entry failed.'); return; }
     onSaved(amt);
   }
 
@@ -514,7 +578,197 @@ function CollectModal({
       <IconField label="Collection Amount" icon={Coins}>
         <input className="input pl-10" inputMode="numeric" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={String(fund.weekly_amount)} />
       </IconField>
-      <p className="text-xs text-ink-400">Adds to the fund's collected total. Auto-marks the fund matured when the payout is fully collected.</p>
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="label">Payment Method</label>
+          <select className="input capitalize" value={method} onChange={(e) => setMethod(e.target.value as FundPayment['payment_method'])}>
+            {PAYMENT_METHODS.map((m) => (
+              <option key={m} value={m} className="capitalize">{m}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="label">Payment Date</label>
+          <input type="date" className="input" value={payDate} onChange={(e) => setPayDate(e.target.value)} />
+        </div>
+      </div>
+      <p className="text-xs text-ink-400">Adds to the fund's collected total and records a passbook entry. Auto-marks the fund matured when the payout is fully collected.</p>
+    </ModalShell>
+  );
+}
+
+function PassbookModal({ fund, onClose }: { fund: Fund; onClose: () => void }) {
+  const [rows, setRows] = useState<FundPayment[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const { data } = await supabase
+        .from('fund_payments').select('*')
+        .eq('fund_id', fund.id)
+        .order('week_no', { ascending: true })
+        .order('created_at', { ascending: true });
+      if (!active) return;
+      setRows((data ?? []) as FundPayment[]);
+      setLoading(false);
+    })();
+    return () => { active = false; };
+  }, [fund.id]);
+
+  const collected = Number(fund.collected_amount);
+  const target = depositTarget(fund);
+  const bonus = Number(fund.bonus);
+  const payout = Number(fund.total_amount);
+  const remaining = Math.max(0, target - collected);
+  const paidWeeks = rows.length;
+  const depositDone = collected >= target - 0.01;
+  const bonusCredited = fund.status === 'matured' || depositDone;
+
+  // Remaining weekly deposits and the date each one is due (start + (week-1)×7 days).
+  const startBase = fund.start_date ? parseISODate(fund.start_date) : null;
+  const today0 = new Date();
+  today0.setHours(0, 0, 0, 0);
+  const upcoming: { week: number; date: Date; overdue: boolean }[] = [];
+  if (startBase && !bonusCredited) {
+    for (let w = paidWeeks + 1; w <= Number(fund.weeks); w++) {
+      const d = new Date(startBase);
+      d.setDate(d.getDate() + (w - 1) * 7);
+      upcoming.push({ week: w, date: d, overdue: d < today0 });
+    }
+  }
+  const nextDue = upcoming[0] ?? null;
+  const hasAnything = rows.length > 0 || upcoming.length > 0 || (bonusCredited && bonus > 0);
+
+  return (
+    <ModalShell
+      title="Passbook"
+      subtitle={`${fund.fund_number}${fund.customer_name ? ' · ' + fund.customer_name : ''}`}
+      onClose={onClose}
+      footer={<button className="btn-primary" onClick={onClose}>Close</button>}
+    >
+      {/* Summary */}
+      <div className="grid grid-cols-3 gap-2 text-center">
+        <div className="rounded-xl bg-emerald-50 p-3">
+          <p className="text-[10px] text-emerald-500 uppercase tracking-wide">Deposited</p>
+          <p className="text-sm font-bold text-emerald-700 mt-0.5">{formatCurrency(collected)}</p>
+        </div>
+        <div className="rounded-xl bg-ink-50 p-3">
+          <p className="text-[10px] text-ink-400 uppercase tracking-wide">To Deposit</p>
+          <p className="text-sm font-bold text-ink-800 mt-0.5">{formatCurrency(remaining)}</p>
+        </div>
+        <div className="rounded-xl bg-brand-50 p-3">
+          <p className="text-[10px] text-brand-500 uppercase tracking-wide">Entries</p>
+          <p className="text-sm font-bold text-brand-700 mt-0.5">{paidWeeks} / {fund.weeks}</p>
+        </div>
+      </div>
+
+      {/* Payout breakdown: deposit + bonus credited only at settlement */}
+      <div className="rounded-2xl border border-ink-100 overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-2.5 text-sm">
+          <span className="text-ink-500">Total deposit ({formatCurrency(fund.weekly_amount)} × {fund.weeks} weeks)</span>
+          <span className="font-semibold text-ink-800">{formatCurrency(target)}</span>
+        </div>
+        <div className="flex items-center justify-between px-4 py-2.5 text-sm border-t border-ink-100">
+          <span className="text-ink-500 flex items-center gap-1"><Gift className="w-3.5 h-3.5 text-amber-500" /> Maturity bonus {bonusCredited ? '' : '(at settlement)'}</span>
+          <span className="font-semibold text-amber-700">+ {formatCurrency(bonus)}</span>
+        </div>
+        <div className="flex items-center justify-between px-4 py-3 bg-emerald-50 border-t border-emerald-100">
+          <span className="text-sm font-semibold text-emerald-700">Maturity payout</span>
+          <span className="text-lg font-extrabold text-emerald-800">{formatCurrency(payout)}</span>
+        </div>
+      </div>
+
+      {/* Next deposit due */}
+      {nextDue && (
+        <div className={`flex items-center justify-between rounded-xl border px-4 py-2.5 text-sm ${nextDue.overdue ? 'bg-rose-50 border-rose-100' : 'bg-blue-50 border-blue-100'}`}>
+          <span className={`font-medium flex items-center gap-1.5 ${nextDue.overdue ? 'text-rose-700' : 'text-blue-700'}`}>
+            <Calendar className="w-4 h-4" /> {nextDue.overdue ? 'Deposit overdue' : 'Next deposit due'} · Week {nextDue.week}
+          </span>
+          <span className={`font-bold ${nextDue.overdue ? 'text-rose-800' : 'text-blue-800'}`}>
+            {formatDate(toISODateLocal(nextDue.date))} ({weekdayShort(nextDue.date)}) · {formatCurrency(fund.weekly_amount)}
+          </span>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="py-10 flex flex-col items-center justify-center">
+          <Loader2 className="w-6 h-6 text-brand-500 animate-spin" />
+          <p className="text-sm text-ink-500 mt-2">Loading passbook…</p>
+        </div>
+      ) : !hasAnything ? (
+        <EmptyState
+          icon={Inbox}
+          title="No payments yet"
+          description="Collections recorded against this fund will appear here as passbook entries."
+        />
+      ) : (
+        <div className="rounded-2xl border border-ink-100 overflow-hidden">
+          <div className="grid grid-cols-[auto_1fr_auto] gap-x-3 px-4 py-2 bg-ink-50 text-[11px] font-semibold uppercase tracking-wide text-ink-400">
+            <span>Wk</span>
+            <span>Date · Method</span>
+            <span className="text-right">Amount · Balance</span>
+          </div>
+          <div className="divide-y divide-ink-100 max-h-[46vh] overflow-y-auto">
+            {rows.map((p) => (
+              <div key={p.id} className="grid grid-cols-[auto_1fr_auto] gap-x-3 items-center px-4 py-2.5">
+                <span className="w-7 h-7 rounded-lg bg-brand-50 text-brand-600 text-xs font-bold flex items-center justify-center">
+                  {p.week_no || '—'}
+                </span>
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-ink-800">{p.payment_date ? formatDate(p.payment_date) : formatDate(p.created_at)}</p>
+                  <p className="text-[11px] text-ink-400 capitalize">
+                    {p.payment_method}{p.agent_name ? ` · ${p.agent_name}` : ''}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="text-sm font-bold text-emerald-700">+ {formatCurrency(p.amount)}</p>
+                  <p className="text-[11px] text-ink-400">Bal {formatCurrency(p.balance_after)}</p>
+                </div>
+              </div>
+            ))}
+
+            {/* Maturity bonus — credited on top of deposits at settlement */}
+            {bonusCredited && bonus > 0 && (
+              <div className="grid grid-cols-[auto_1fr_auto] gap-x-3 items-center px-4 py-2.5 bg-amber-50">
+                <span className="w-7 h-7 rounded-lg bg-amber-100 text-amber-600 flex items-center justify-center">
+                  <Gift className="w-3.5 h-3.5" />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-amber-800">Maturity bonus</p>
+                  <p className="text-[11px] text-amber-500">{fund.maturity_date ? formatDate(fund.maturity_date) : 'At settlement'} · credited</p>
+                </div>
+                <div className="text-right">
+                  <p className="text-sm font-bold text-amber-700">+ {formatCurrency(bonus)}</p>
+                  <p className="text-[11px] text-ink-400">Bal {formatCurrency(payout)}</p>
+                </div>
+              </div>
+            )}
+
+            {/* Remaining weekly deposits — due date for each pending week */}
+            {upcoming.map((u) => {
+              const isNext = u.week === paidWeeks + 1;
+              const statusText = u.overdue ? 'Overdue' : isNext ? 'Next due' : 'Upcoming';
+              const statusClass = u.overdue ? 'text-rose-500' : isNext ? 'text-blue-500' : 'text-ink-400';
+              return (
+                <div key={`u-${u.week}`} className="grid grid-cols-[auto_1fr_auto] gap-x-3 items-center px-4 py-2.5 bg-ink-50/40">
+                  <span className="w-7 h-7 rounded-lg border border-dashed border-ink-300 text-ink-400 text-xs font-bold flex items-center justify-center">
+                    {u.week}
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-ink-600">{formatDate(toISODateLocal(u.date))} ({weekdayShort(u.date)})</p>
+                    <p className={`text-[11px] font-medium ${statusClass}`}>{statusText}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-semibold text-ink-400">{formatCurrency(fund.weekly_amount)}</p>
+                    <p className="text-[11px] text-ink-300">Pending</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </ModalShell>
   );
 }

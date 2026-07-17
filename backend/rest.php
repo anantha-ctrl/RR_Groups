@@ -9,7 +9,11 @@ if ($model === null) {
     json_error("Unknown table: $table", 404);
 }
 
-$controller = $table === 'funds'
-    ? new FundController($model)
-    : new ResourceController($model);
+if ($table === 'funds') {
+    $controller = new FundController($model);
+} elseif ($table === 'fund_payments') {
+    $controller = new FundPaymentController($model);
+} else {
+    $controller = new ResourceController($model);
+}
 $controller->handle();
