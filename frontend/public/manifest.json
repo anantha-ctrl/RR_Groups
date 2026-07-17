@@ -1,0 +1,15 @@
+{
+  "name": "RR Groups — Loan & Collection Management",
+  "short_name": "RR Groups",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#0d1226",
+  "icons": [
+    {
+      "src": "/assets/rr-groups-logo.jpg",
+      "sizes": "any",
+      "type": "image/jpeg"
+    }
+  ]
+}
