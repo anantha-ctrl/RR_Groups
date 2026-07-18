@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '../supabaseClient';
 import { useAuth } from '../auth';
+import { useCompany } from '../company';
 import {
   PageHeader,
   StatusBadge,
@@ -27,15 +28,18 @@ import type { Loan, Collection } from '../types';
 
 interface CardState {
   visited: boolean;
+  visiting?: boolean;
   proofPreview: string | null;
 }
 
 export default function AgentCollectionsScreen({ onNavigate }: { onNavigate: (id: string) => void }) {
   void onNavigate;
   const { profile } = useAuth();
+  const company = useCompany();
   const [loans, setLoans] = useState<Loan[]>([]);
   const [todayCollections, setTodayCollections] = useState<Collection[]>([]);
   const [cardState, setCardState] = useState<Record<string, CardState>>({});
+  const [toast, setToast] = useState<{ msg: string; tone: 'ok' | 'err' } | null>(null);
   const [loading, setLoading] = useState(true);
   const [collectLoan, setCollectLoan] = useState<Loan | null>(null);
   const [receipt, setReceipt] = useState<Collection | null>(null);
@@ -86,6 +90,39 @@ export default function AgentCollectionsScreen({ onNavigate }: { onNavigate: (id
     }
     return m;
   }, [todayCollections]);
+
+  function flash(msg: string, tone: 'ok' | 'err' = 'ok') {
+    setToast({ msg, tone });
+    setTimeout(() => setToast(null), 3000);
+  }
+
+  // "Visit" → capture the agent's live GPS and save it as this customer's
+  // map location (persisted to the DB so it shows on the Route Map).
+  function captureVisit(loan: Loan) {
+    if (!loan.customer_id) { flash('No customer linked to this loan', 'err'); return; }
+    if (!('geolocation' in navigator)) { flash('GPS not available on this device', 'err'); return; }
+    setCardState((p) => ({ ...p, [loan.id]: { ...(p[loan.id] ?? { visited: false, proofPreview: null }), visiting: true } }));
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const lat = Number(pos.coords.latitude.toFixed(7));
+        const lng = Number(pos.coords.longitude.toFixed(7));
+        const { error } = await supabase
+          .from('customers')
+          .update({ latitude: lat, longitude: lng })
+          .eq('id', loan.customer_id as string);
+        setCardState((p) => ({
+          ...p,
+          [loan.id]: { ...(p[loan.id] ?? { proofPreview: null }), visiting: false, visited: !error },
+        }));
+        flash(error ? 'Captured, but could not save location' : 'Visit location captured & saved ✓', error ? 'err' : 'ok');
+      },
+      () => {
+        setCardState((p) => ({ ...p, [loan.id]: { ...(p[loan.id] ?? { visited: false, proofPreview: null }), visiting: false } }));
+        flash('Could not get your location — allow location access', 'err');
+      },
+      { enableHighAccuracy: true, timeout: 10000 },
+    );
+  }
 
   function openCollect(loan: Loan) {
     setCollectLoan(loan);
@@ -163,6 +200,17 @@ export default function AgentCollectionsScreen({ onNavigate }: { onNavigate: (id
         subtitle={`${loans.length} customers assigned • ${todayCollections.length} collected today`}
       />
 
+      {toast && (
+        <div className={`flex items-center gap-2 text-sm rounded-xl px-4 py-3 animate-scale-in border ${
+          toast.tone === 'ok'
+            ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+            : 'bg-rose-50 border-rose-200 text-rose-700'
+        }`}>
+          {toast.tone === 'ok' ? <Check className="w-4 h-4 shrink-0" /> : <MapPin className="w-4 h-4 shrink-0" />}
+          <span>{toast.msg}</span>
+        </div>
+      )}
+
       {loans.length === 0 && (
         <EmptyState
           icon={Users}
@@ -228,20 +276,19 @@ export default function AgentCollectionsScreen({ onNavigate }: { onNavigate: (id
                   <IndianRupee className="w-3.5 h-3.5" /> Collect
                 </button>
                 <button
-                  onClick={() =>
-                    setCardState((p) => ({
-                      ...p,
-                      [loan.id]: { ...st, visited: !st.visited },
-                    }))
-                  }
-                  className={`text-xs font-semibold py-2.5 rounded-lg flex items-center justify-center gap-1 transition-colors ${
+                  onClick={() => captureVisit(loan)}
+                  disabled={st.visiting}
+                  title="Capture this customer's location"
+                  className={`text-xs font-semibold py-2.5 rounded-lg flex items-center justify-center gap-1 transition-colors disabled:opacity-70 ${
                     st.visited
                       ? 'bg-emerald-100 text-emerald-700'
                       : 'bg-ink-100 text-ink-700 hover:bg-ink-200'
                   }`}
                 >
-                  {st.visited ? <Check className="w-3.5 h-3.5" /> : <MapPin className="w-3.5 h-3.5" />}
-                  {st.visited ? 'Visited' : 'Visit'}
+                  {st.visiting ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    : st.visited ? <Check className="w-3.5 h-3.5" />
+                    : <MapPin className="w-3.5 h-3.5" />}
+                  {st.visiting ? 'Locating…' : st.visited ? 'Visited' : 'Visit'}
                 </button>
                 <label className="bg-ink-100 text-ink-700 hover:bg-ink-200 text-xs font-semibold py-2.5 rounded-lg flex items-center justify-center gap-1 cursor-pointer transition-colors">
                   <Upload className="w-3.5 h-3.5" /> Proof
@@ -383,7 +430,21 @@ export default function AgentCollectionsScreen({ onNavigate }: { onNavigate: (id
       <Modal open={!!receipt} onClose={() => setReceipt(null)} title="Payment Receipt" size="sm">
         {receipt && (
           <div className="space-y-4">
-            <div className="border border-dashed border-ink-200 rounded-xl p-5 text-center bg-ink-50/50">
+            <div className="printable border border-dashed border-ink-200 rounded-xl p-5 text-center bg-ink-50/50">
+              {/* Letterhead: logo + brand + company details */}
+              <div className="flex flex-col items-center gap-1.5 pb-3 mb-3 border-b border-ink-200">
+                <img src={company.logoUrl} alt={company.name} className="w-14 h-14 rounded-full object-cover" />
+                <p className="text-base font-extrabold text-ink-900 leading-tight">{company.name}</p>
+                {company.address && <p className="text-[11px] text-ink-500 leading-snug max-w-[280px]">{company.address}</p>}
+                {(company.contact || company.gst) && (
+                  <p className="text-[11px] text-ink-500">
+                    {company.contact && <span>Ph: {company.contact}</span>}
+                    {company.contact && company.gst && <span className="text-ink-300"> · </span>}
+                    {company.gst && <span>GST: {company.gst}</span>}
+                  </p>
+                )}
+              </div>
+
               <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto mb-3">
                 <Check className="w-6 h-6" />
               </div>
@@ -399,7 +460,7 @@ export default function AgentCollectionsScreen({ onNavigate }: { onNavigate: (id
                 <Row label="Agent" value={receipt.agent_name ?? '-'} />
               </div>
             </div>
-            <div className="flex gap-2">
+            <div className="flex gap-2 no-print">
               <button onClick={() => setReceipt(null)} className="btn-secondary flex-1 py-3">
                 Close
               </button>

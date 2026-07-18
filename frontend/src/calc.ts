@@ -125,23 +125,41 @@ export function buildWeeklySchedule(
   return { schedule, installment, totalInterest, disbursedAmount };
 }
 
-// ─── Daily Schedule (interest added to repayment) ────────────────────────────
-// Interest is ADDED to the amount repaid; the borrower receives the full principal.
-//   totalInterest = principal × rate%
-//   totalRepayment = principal + totalInterest
-//   disbursed      = principal (full — no upfront deduction)
-//   daily install  = totalRepayment / days
+// ─── Daily Schedule ──────────────────────────────────────────────────────────
+// Two daily-finance models, selected by `mode`:
+//
+//   'added'  (e.g. 60-day plan): interest is ADDED on top; borrower gets the full
+//            principal and repays principal + interest.
+//              totalRepayment = principal + interest
+//              disbursed      = principal
+//              daily install  = totalRepayment / days
+//
+//   'upfront' (e.g. 100-day plan): interest is DEDUCTED upfront; borrower repays
+//            exactly the principal, the daily amount is a clean principal ÷ days.
+//              totalRepayment = principal              (e.g. ₹10,000)
+//              disbursed      = principal − interest   (e.g. ₹8,500 at 15%)
+//              daily install  = principal / days       (e.g. ₹100)
 export function buildDailySchedule(
   principal: number,
   ratePct: number,
   days: number,
   startDate: string,
+  mode: 'added' | 'upfront' = 'added',
 ): { schedule: Omit<RepaymentSchedule, 'id' | 'loan_id' | 'created_at'>[]; installment: number; totalInterest: number; totalRepayment: number; disbursedAmount: number } {
   if (principal <= 0 || days <= 0) return { schedule: [], installment: 0, totalInterest: 0, totalRepayment: 0, disbursedAmount: 0 };
   const totalInterest = round(principal * ratePct / 100, 2);
-  const totalRepayment = round(principal + totalInterest, 2);
-  const disbursedAmount = principal; // borrower receives the full principal
-  const installment = round(totalRepayment / days, 2);
+  let totalRepayment: number;
+  let disbursedAmount: number;
+  let installment: number;
+  if (mode === 'upfront') {
+    totalRepayment = principal;                              // repay the principal
+    disbursedAmount = round(principal - totalInterest, 2);   // interest taken upfront
+    installment = round(principal / days, 2);                // clean principal ÷ days
+  } else {
+    totalRepayment = round(principal + totalInterest, 2);
+    disbursedAmount = principal;                             // borrower receives full principal
+    installment = round(totalRepayment / days, 2);
+  }
   const schedule: Omit<RepaymentSchedule, 'id' | 'loan_id' | 'created_at'>[] = [];
   const start = new Date(startDate);
   for (let i = 1; i <= days; i++) {

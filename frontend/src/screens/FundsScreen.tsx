@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   PiggyBank, Plus, X, Loader2, Calendar, Coins, Gift, Wallet,
   TrendingUp, Check, AlertCircle, Search, Pencil, Trash2, HandCoins, RefreshCw,
-  BookOpen, Inbox,
+  BookOpen, Inbox, CheckCircle2,
 } from 'lucide-react';
 import { supabase } from '../supabaseClient';
 import { useAuth } from '../auth';
@@ -56,6 +56,7 @@ export default function FundsScreen() {
   const [formOpen, setFormOpen] = useState(false);
   const [editFund, setEditFund] = useState<Fund | null>(null);
   const [collectTarget, setCollectTarget] = useState<Fund | null>(null);
+  const [settleTarget, setSettleTarget] = useState<Fund | null>(null);
   const [passbookTarget, setPassbookTarget] = useState<Fund | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Fund | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -197,9 +198,11 @@ export default function FundsScreen() {
               showCustomer={!isCustomer}
               canManage={isAdmin}
               canCollect={isAgent}
+              canSettle={isAdmin || isAgent}
               onEdit={() => { setEditFund(f); setFormOpen(true); }}
               onDelete={() => setDeleteTarget(f)}
               onCollect={() => setCollectTarget(f)}
+              onSettle={() => setSettleTarget(f)}
               onPassbook={() => setPassbookTarget(f)}
             />
           ))}
@@ -233,6 +236,20 @@ export default function FundsScreen() {
         />
       )}
 
+      {settleTarget && (
+        <SettleModal
+          fund={settleTarget}
+          agentId={profile?.id ?? null}
+          agentName={profile?.full_name ?? null}
+          onClose={() => setSettleTarget(null)}
+          onSaved={() => {
+            setSettleTarget(null);
+            setToast('Fund settled in full.');
+            load();
+          }}
+        />
+      )}
+
       {passbookTarget && (
         <PassbookModal
           fund={passbookTarget}
@@ -254,15 +271,17 @@ export default function FundsScreen() {
 }
 
 function FundCard({
-  fund, showCustomer, canManage, canCollect, onEdit, onDelete, onCollect, onPassbook,
+  fund, showCustomer, canManage, canCollect, canSettle, onEdit, onDelete, onCollect, onSettle, onPassbook,
 }: {
   fund: Fund;
   showCustomer: boolean;
   canManage: boolean;
   canCollect: boolean;
+  canSettle: boolean;
   onEdit: () => void;
   onDelete: () => void;
   onCollect: () => void;
+  onSettle: () => void;
   onPassbook: () => void;
 }) {
   const target = depositTarget(fund);
@@ -356,7 +375,16 @@ function FundCard({
           </>
         )}
       </div>
-      {canCollect && fund.status === 'active' && remaining > 0 && (
+      {/* Early full settlement — collect the remaining balance in one go and mature the fund */}
+      {canSettle && fund.status === 'active' && remaining > 0 && (
+        <button
+          onClick={onSettle}
+          className="mt-2 w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 text-sm font-semibold transition-colors"
+        >
+          <CheckCircle2 className="w-4 h-4" /> Settle in full · {formatCurrency(remaining)} left
+        </button>
+      )}
+      {canCollect && !canSettle && fund.status === 'active' && remaining > 0 && (
         <p className="text-[11px] text-ink-400 mt-2 text-center">{formatCurrency(remaining)} remaining to maturity</p>
       )}
     </div>
@@ -593,6 +621,117 @@ function CollectModal({
         </div>
       </div>
       <p className="text-xs text-ink-400">Adds to the fund's collected total and records a passbook entry. Auto-marks the fund matured when the payout is fully collected.</p>
+    </ModalShell>
+  );
+}
+
+function SettleModal({
+  fund, agentId, agentName, onClose, onSaved,
+}: {
+  fund: Fund;
+  agentId: string | null;
+  agentName: string | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const target = depositTarget(fund);
+  const collected = Number(fund.collected_amount);
+  const remaining = Math.max(0, target - collected);
+  const bonus = Number(fund.bonus);
+  const payout = Number(fund.total_amount);
+  const [method, setMethod] = useState<FundPayment['payment_method']>('cash');
+  const [payDate, setPayDate] = useState(todayISO());
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save() {
+    setError(null);
+    setSaving(true);
+    // 1) Mature the fund — collected reaches the full deposit target.
+    const { error: err } = await supabase.from('funds')
+      .update({ collected_amount: target, status: 'matured' })
+      .eq('id', fund.id);
+    if (err) { setSaving(false); setError(err.message || 'Could not settle the fund.'); return; }
+    // 2) Record the settlement lump in the passbook (if any balance was left).
+    if (remaining > 0) {
+      const { error: pErr } = await supabase.from('fund_payments').insert({
+        fund_id: fund.id,
+        fund_number: fund.fund_number,
+        customer_id: fund.customer_id,
+        customer_name: fund.customer_name,
+        week_no: Number(fund.weeks),
+        amount: remaining,
+        balance_after: target,
+        payment_method: method,
+        payment_date: payDate,
+        agent_id: agentId,
+        agent_name: agentName,
+        notes: 'Full settlement (early closure)',
+      });
+      if (pErr) { setSaving(false); setError(pErr.message || 'Settled, but passbook entry failed.'); return; }
+    }
+    setSaving(false);
+    onSaved();
+  }
+
+  return (
+    <ModalShell
+      title="Settle Fund in Full"
+      subtitle={`${fund.fund_number} · ${fund.customer_name ?? ''}`}
+      onClose={onClose}
+      footer={
+        <>
+          <button className="btn-secondary" onClick={onClose} disabled={saving}>Cancel</button>
+          <button className="btn-primary" onClick={save} disabled={saving}>
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <><CheckCircle2 className="w-4 h-4" /> Settle Now</>}
+          </button>
+        </>
+      }
+    >
+      {error && <FormError text={error} />}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="rounded-xl bg-ink-50 p-3">
+          <p className="text-[11px] text-ink-400 uppercase tracking-wide">Deposited</p>
+          <p className="text-base font-bold text-ink-800 mt-0.5">{formatCurrency(collected)}</p>
+        </div>
+        <div className="rounded-xl bg-amber-50 p-3">
+          <p className="text-[11px] text-amber-500 uppercase tracking-wide">Remaining to settle</p>
+          <p className="text-base font-bold text-amber-700 mt-0.5">{formatCurrency(remaining)}</p>
+        </div>
+      </div>
+
+      {remaining > 0 && (
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="label">Payment Method</label>
+            <select className="input capitalize" value={method} onChange={(e) => setMethod(e.target.value as FundPayment['payment_method'])}>
+              {PAYMENT_METHODS.map((m) => (<option key={m} value={m} className="capitalize">{m}</option>))}
+            </select>
+          </div>
+          <div>
+            <label className="label">Settlement Date</label>
+            <input type="date" className="input" value={payDate} onChange={(e) => setPayDate(e.target.value)} />
+          </div>
+        </div>
+      )}
+
+      <div className="rounded-2xl border border-ink-100 overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-2.5 text-sm">
+          <span className="text-ink-500">Total deposit</span>
+          <span className="font-semibold text-ink-800">{formatCurrency(target)}</span>
+        </div>
+        <div className="flex items-center justify-between px-4 py-2.5 text-sm border-t border-ink-100">
+          <span className="text-ink-500 flex items-center gap-1"><Gift className="w-3.5 h-3.5 text-amber-500" /> Maturity bonus</span>
+          <span className="font-semibold text-amber-700">+ {formatCurrency(bonus)}</span>
+        </div>
+        <div className="flex items-center justify-between px-4 py-3 bg-emerald-50 border-t border-emerald-100">
+          <span className="text-sm font-semibold text-emerald-700">Payout to customer</span>
+          <span className="text-lg font-extrabold text-emerald-800">{formatCurrency(payout)}</span>
+        </div>
+      </div>
+      <p className="text-xs text-ink-400">
+        Collects the remaining balance now, credits the full bonus, and marks the fund matured — even though all {fund.weeks} weeks aren't finished.
+      </p>
     </ModalShell>
   );
 }

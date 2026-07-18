@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, useRef } from 'react';
 import { Wallet, Plus, Search, Printer, Edit, Trash2, Upload, CheckCircle2, IndianRupee, FileText, Loader2, X } from 'lucide-react';
 import { supabase } from '../supabaseClient';
 import { useAuth } from '../auth';
+import { useCompany } from '../company';
 import { useAgents } from '../hooks';
 import { formatCurrency, formatDate, formatDateTime } from '../calc';
 import type { Collection, Customer, Loan, Profile } from '../types';
@@ -105,16 +106,20 @@ function Row({ k, v }: { k: string; v: string }) {
 }
 
 function ReceiptCard({ collection }: { collection: Collection }) {
+  const company = useCompany();
+  const meta = [company.contact && `Ph: ${company.contact}`, company.gst && `GST: ${company.gst}`]
+    .filter(Boolean).join(' · ');
   return (
     <div id="receipt-print" className="bg-white p-6 rounded-xl border border-ink-200">
       <div className="text-center pb-4 border-b border-dashed border-ink-200">
         <img
-          src="/assets/rr-groups-logo.png"
-          alt={COMPANY}
+          src={company.logoUrl}
+          alt={company.name}
           className="w-14 h-14 rounded-full object-cover mx-auto mb-2 ring-2 ring-brand-200"
         />
-        <h2 className="text-base font-bold text-ink-900">{COMPANY}</h2>
-        <p className="text-[11px] text-ink-400 mt-0.5">42 Finance Street, Bengaluru, KA 560001 · GST: 29AABCF1234L1Z5</p>
+        <h2 className="text-base font-bold text-ink-900">{company.name}</h2>
+        {company.address && <p className="text-[11px] text-ink-400 mt-0.5">{company.address}</p>}
+        {meta && <p className="text-[11px] text-ink-400 mt-0.5">{meta}</p>}
       </div>
       <div className="flex items-center justify-between py-3">
         <div>

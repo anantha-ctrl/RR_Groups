@@ -28,6 +28,7 @@ import CustomerScheduleScreen from './screens/CustomerScheduleScreen';
 import CustomerPaymentsScreen from './screens/CustomerPaymentsScreen';
 import ProfileScreen from './screens/ProfileScreen';
 import FundsScreen from './screens/FundsScreen';
+import HandoversScreen from './screens/HandoversScreen';
 
 const TITLE_MAP: Record<string, string> = {
   dashboard: 'Dashboard',
@@ -39,6 +40,7 @@ const TITLE_MAP: Record<string, string> = {
   'chit-groups': 'Chit Group Management',
   funds: 'Funds',
   'my-funds': 'My Funds',
+  handovers: 'Cash Handover',
   reports: 'Reports & Analytics',
   notifications: 'Notifications',
   settings: 'Settings',
@@ -146,6 +148,8 @@ function Shell() {
       case 'funds':
       case 'my-funds':
         return <FundsScreen />;
+      case 'handovers':
+        return <HandoversScreen />;
       case 'reports':
         return <ReportsScreen onNavigate={navigate} />;
       case 'notifications':

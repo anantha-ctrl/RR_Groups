@@ -26,6 +26,8 @@ export interface Customer {
   pan: string | null;
   occupation: string | null;
   photo_url: string | null;
+  latitude: number | null;
+  longitude: number | null;
   loan_status: 'none' | 'active' | 'overdue' | 'closed';
   assigned_agent: string | null;
   created_at: string;
@@ -140,6 +142,20 @@ export interface FundPayment {
   agent_id: string | null;
   agent_name: string | null;
   notes: string | null;
+  created_at: string;
+}
+
+export interface Handover {
+  id: string;
+  agent_id: string | null;
+  agent_name: string | null;
+  cash_amount: number;
+  upi_amount: number;
+  total_amount: number;
+  handover_date: string | null;
+  notes: string | null;
+  status: 'pending' | 'verified';
+  received_by: string | null;
   created_at: string;
 }
 

@@ -2,9 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Search, UserPlus, FileSpreadsheet, Pencil, Trash2, Eye, Loader2, Users,
   Phone, MapPin, CreditCard, Briefcase, Upload, Landmark, Wallet, X,
-  ChevronDown, FileText, Download,
+  ChevronDown, FileText, Download, LocateFixed,
 } from 'lucide-react';
 import { supabase, apiCall } from '../supabaseClient';
+import { geocodeAddress } from '../geocode';
 import { useAgents } from '../hooks';
 import type { Customer, Loan, Collection } from '../types';
 import { formatCurrency, formatDate, maskAadhaar } from '../calc';
@@ -19,12 +20,13 @@ type Row = Customer & { agent_name: string };
 type FormState = {
   full_name: string; mobile: string; address: string; aadhaar: string;
   pan: string; occupation: string; photo_url: string; assigned_agent: string;
-  email: string; password: string;
+  email: string; password: string; latitude: string; longitude: string;
 };
 
 const EMPTY_FORM: FormState = {
   full_name: '', mobile: '', address: '', aadhaar: '', pan: '',
   occupation: '', photo_url: '', assigned_agent: '', email: '', password: '',
+  latitude: '', longitude: '',
 };
 
 const STATUS_OPTIONS = [
@@ -55,6 +57,8 @@ function toForm(c: Customer): FormState {
     occupation: c.occupation ?? '',
     photo_url: c.photo_url ?? '',
     assigned_agent: c.assigned_agent ?? '',
+    latitude: c.latitude != null ? String(c.latitude) : '',
+    longitude: c.longitude != null ? String(c.longitude) : '',
   };
 }
 
@@ -119,6 +123,7 @@ export default function CustomersScreen({ onNavigate }: { onNavigate: (id: strin
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [geoBusy, setGeoBusy] = useState<'idle' | 'geocoding' | 'gps'>('idle');
   const photoInput = useRef<HTMLInputElement>(null);
 
   const [viewing, setViewing] = useState<Row | null>(null);
@@ -211,6 +216,32 @@ export default function CustomersScreen({ onNavigate }: { onNavigate: (id: strin
     }
   };
 
+  // Look up coordinates from the typed address (free OpenStreetMap geocoder).
+  const pinFromAddress = async () => {
+    if (!form.address.trim()) { flash('Enter an address first', 'err'); return; }
+    setGeoBusy('geocoding');
+    const p = await geocodeAddress(form.address);
+    setGeoBusy('idle');
+    if (!p) { flash('Could not find that address on the map', 'err'); return; }
+    setForm((f) => ({ ...f, latitude: p.lat.toFixed(7), longitude: p.lng.toFixed(7) }));
+    flash('Location pinned from address');
+  };
+
+  // Capture the device's current GPS position (stand at the customer's door).
+  const useMyGps = () => {
+    if (!('geolocation' in navigator)) { flash('GPS not available on this device', 'err'); return; }
+    setGeoBusy('gps');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setForm((f) => ({ ...f, latitude: pos.coords.latitude.toFixed(7), longitude: pos.coords.longitude.toFixed(7) }));
+        setGeoBusy('idle');
+        flash('Current location captured');
+      },
+      () => { setGeoBusy('idle'); flash('Could not get your location — allow location access', 'err'); },
+      { enableHighAccuracy: true, timeout: 10000 },
+    );
+  };
+
   const handleSave = async () => {
     if (!form.full_name.trim()) { flash('Full name is required', 'err'); return; }
     // If giving app access, both email and password are needed (on create).
@@ -222,10 +253,22 @@ export default function CustomersScreen({ onNavigate }: { onNavigate: (id: strin
     }
     setSaving(true);
     try {
+      // Resolve the map location so the pin follows the address the user typed.
+      // Auto-geocode when the address is set and either there are no coordinates
+      // yet, or the address was changed (so it always matches). Manually kept GPS
+      // coords with an unchanged address are preserved.
+      let lat = form.latitude.trim() ? parseFloat(form.latitude) : null;
+      let lng = form.longitude.trim() ? parseFloat(form.longitude) : null;
+      const addr = form.address.trim();
+      const addressChanged = !editing || (editing.address ?? '').trim() !== addr;
+      if (addr && (lat == null || lng == null || addressChanged)) {
+        const p = await geocodeAddress(addr);
+        if (p) { lat = p.lat; lng = p.lng; }
+      }
       const payload = {
         full_name: form.full_name.trim(),
         mobile: form.mobile.trim() || null,
-        address: form.address.trim() || null,
+        address: addr || null,
         aadhaar: form.aadhaar.trim() || null,
         pan: form.pan.trim() || null,
         occupation: form.occupation.trim() || null,
@@ -233,6 +276,8 @@ export default function CustomersScreen({ onNavigate }: { onNavigate: (id: strin
         assigned_agent: form.assigned_agent || null,
         email: form.email.trim() || null,
         password: form.password || null,
+        latitude: lat,
+        longitude: lng,
       };
       const { error } = editing
         ? await apiCall(`customers.php?id=${editing.id}`, { method: 'PATCH', body: payload })
@@ -442,6 +487,36 @@ export default function CustomersScreen({ onNavigate }: { onNavigate: (id: strin
               ))}
             </Select>
           </Field>
+
+          <div className="sm:col-span-2 rounded-xl border border-ink-100 p-3">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-semibold text-ink-600 flex items-center gap-1.5">
+                <MapPin className="w-3.5 h-3.5 text-brand-600" /> Map Location <span className="font-normal text-ink-400">(for agent route)</span>
+              </p>
+              {form.latitude && form.longitude && (
+                <span className="text-[11px] text-emerald-600 font-semibold">Pinned ✓</span>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2 mb-3">
+              <button type="button" onClick={pinFromAddress} disabled={geoBusy !== 'idle'} className="btn-secondary text-xs px-3 py-2">
+                {geoBusy === 'geocoding' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <MapPin className="w-3.5 h-3.5" />} Pin from address
+              </button>
+              <button type="button" onClick={useMyGps} disabled={geoBusy !== 'idle'} className="btn-secondary text-xs px-3 py-2">
+                {geoBusy === 'gps' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <LocateFixed className="w-3.5 h-3.5" />} Use my GPS
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Latitude">
+                <input className="input font-mono" value={form.latitude} onChange={(e) => setForm({ ...form, latitude: e.target.value })} placeholder="13.0827" />
+              </Field>
+              <Field label="Longitude">
+                <input className="input font-mono" value={form.longitude} onChange={(e) => setForm({ ...form, longitude: e.target.value })} placeholder="80.2707" />
+              </Field>
+            </div>
+            <p className="text-[11px] text-ink-400 mt-1.5">
+              Shows this customer on the agent's live Route Map. “Pin from address” looks up the address above; “Use my GPS” captures where you're standing.
+            </p>
+          </div>
 
           <div className="sm:col-span-2 mt-1 rounded-xl border border-brand-100 bg-brand-50/50 p-3">
             <p className="text-xs font-semibold text-brand-700 mb-2 flex items-center gap-1.5">

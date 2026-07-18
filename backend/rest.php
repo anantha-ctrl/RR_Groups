@@ -13,6 +13,8 @@ if ($table === 'funds') {
     $controller = new FundController($model);
 } elseif ($table === 'fund_payments') {
     $controller = new FundPaymentController($model);
+} elseif ($table === 'handovers') {
+    $controller = new HandoverController($model);
 } else {
     $controller = new ResourceController($model);
 }

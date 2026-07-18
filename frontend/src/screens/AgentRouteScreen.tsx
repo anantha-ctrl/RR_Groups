@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   MapPin,
   Navigation,
@@ -6,91 +6,148 @@ import {
   Users,
   CheckCircle2,
   Clock,
-  Route as RouteIcon,
-  Map,
+  Wallet,
+  Map as MapIcon,
+  Phone,
+  RefreshCw,
+  LocateFixed,
 } from 'lucide-react';
 import { supabase } from '../supabaseClient';
 import { useAuth } from '../auth';
 import { PageHeader, StatusBadge, EmptyState, Badge } from '../components/ui';
 import { formatCurrency } from '../calc';
-import type { Loan } from '../types';
+import { RouteMap, type MapStop } from '../components/RouteMap';
+import type { Loan, Customer } from '../types';
 
 type StopStatus = 'paid' | 'pending' | 'visited';
 
 interface Stop extends Omit<Loan, 'status'> {
   status: StopStatus;
-  pin: { x: number; y: number };
+  address: string | null;
+  mobile: string | null;
+  lat: number | null;
+  lng: number | null;
 }
 
-const PIN_POSITIONS = [
-  { x: 18, y: 28 },
-  { x: 42, y: 18 },
-  { x: 68, y: 32 },
-  { x: 54, y: 58 },
-  { x: 82, y: 64 },
-  { x: 28, y: 72 },
-  { x: 60, y: 82 },
-  { x: 78, y: 48 },
-];
+interface GeoPos {
+  lat: number;
+  lng: number;
+}
 
-function distanceKm(stops: Stop[]): string {
-  let total = 0;
-  for (let i = 0; i < stops.length - 1; i++) {
-    const a = stops[i].pin;
-    const b = stops[i + 1].pin;
-    total += Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
-  }
-  return (total * 0.18).toFixed(1);
+// Build a real Google Maps directions URL to a customer's address, using the
+// agent's live GPS as the origin when available. Works on phone & desktop.
+function directionsUrl(dest: string, origin: GeoPos | null): string {
+  const d = encodeURIComponent(dest);
+  const o = origin ? `&origin=${origin.lat},${origin.lng}` : '';
+  return `https://www.google.com/maps/dir/?api=1${o}&destination=${d}`;
 }
 
 export default function AgentRouteScreen({ onNavigate }: { onNavigate: (id: string) => void }) {
   const { profile } = useAuth();
   const [stops, setStops] = useState<Stop[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [myPos, setMyPos] = useState<GeoPos | null>(null);
+  const [geoState, setGeoState] = useState<'idle' | 'locating' | 'ok' | 'denied'>('idle');
+  const activeRef = useRef(true);
 
-  useEffect(() => {
+  const load = useCallback(async (isRefresh = false) => {
     if (!profile?.id) return;
-    let active = true;
-    (async () => {
-      setLoading(true);
-      const today = new Date().toISOString().slice(0, 10);
-      const [loansRes, colRes] = await Promise.all([
-        supabase
-          .from('loans')
-          .select('*')
-          .eq('assigned_agent', profile.id)
-          .in('status', ['active', 'overdue'])
-          .order('created_at', { ascending: false }),
-        supabase
-          .from('collections')
-          .select('*')
-          .eq('agent_id', profile.id)
-          .eq('collection_date', today),
-      ]);
-      if (!active) return;
-      const cols = colRes.data ?? [];
-      const paidIds = new Set(cols.map((c: { loan_id: string | null }) => c.loan_id));
-      const stopsData: Stop[] = (loansRes.data ?? []).map((l: Loan, i: number) => ({
+    if (isRefresh) setRefreshing(true);
+    const today = new Date().toISOString().slice(0, 10);
+    const [loansRes, colRes] = await Promise.all([
+      supabase
+        .from('loans')
+        .select('*')
+        .eq('assigned_agent', profile.id)
+        .in('status', ['active', 'overdue'])
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('collections')
+        .select('*')
+        .eq('agent_id', profile.id)
+        .eq('collection_date', today),
+    ]);
+    const loans = (loansRes.data ?? []) as Loan[];
+    // Pull each stop's real address + mobile from the customers table.
+    const custIds = [...new Set(loans.map((l) => l.customer_id).filter(Boolean))];
+    let custMap = new Map<string, Customer>();
+    if (custIds.length) {
+      const { data: custs } = await supabase.from('customers').select('*').in('id', custIds as string[]);
+      custMap = new Map((custs ?? []).map((c: Customer) => [c.id, c]));
+    }
+    const cols = colRes.data ?? [];
+    const paidIds = new Set(cols.map((c: { loan_id: string | null }) => c.loan_id));
+    const stopsData: Stop[] = loans.map((l) => {
+      const c = l.customer_id ? custMap.get(l.customer_id) : undefined;
+      return {
         ...l,
         status: paidIds.has(l.id) ? 'paid' : 'pending',
-        pin: PIN_POSITIONS[i % PIN_POSITIONS.length],
-      }));
-      setStops(stopsData);
-      setLoading(false);
-    })();
-    return () => {
-      active = false;
-    };
+        address: c?.address ?? null,
+        mobile: c?.mobile ?? null,
+        lat: c?.latitude ?? null,
+        lng: c?.longitude ?? null,
+      };
+    });
+    if (!activeRef.current) return;
+    setStops(stopsData);
+    setLoading(false);
+    setRefreshing(false);
   }, [profile?.id]);
+
+  useEffect(() => {
+    activeRef.current = true;
+    load();
+    const timer = setInterval(() => load(true), 30000);
+    return () => { activeRef.current = false; clearInterval(timer); };
+  }, [load]);
+
+  // Ask for the agent's real location once (used as the origin for directions).
+  const locate = useCallback(() => {
+    if (!('geolocation' in navigator)) { setGeoState('denied'); return; }
+    setGeoState('locating');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        if (!activeRef.current) return;
+        setMyPos({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setGeoState('ok');
+      },
+      () => { if (activeRef.current) setGeoState('denied'); },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 },
+    );
+  }, []);
+
+  useEffect(() => { locate(); }, [locate]);
 
   const stats = useMemo(() => {
     const total = stops.length;
     const completed = stops.filter((s) => s.status === 'paid').length;
-    return { total, completed, remaining: total - completed, distance: distanceKm(stops) };
+    const pendingAmount = stops
+      .filter((s) => s.status !== 'paid')
+      .reduce((sum, s) => sum + Number(s.emi || s.outstanding_balance || 0), 0);
+    return { total, completed, remaining: total - completed, pendingAmount };
   }, [stops]);
 
-  function navigateTo(name: string) {
-    alert(`Opening navigation to ${name}...`);
+  // Stops that have real coordinates → plotted on the live map.
+  const mapStops = useMemo<MapStop[]>(
+    () => stops
+      .filter((s) => s.lat != null && s.lng != null)
+      .map((s, i) => ({
+        id: s.id,
+        name: `${i + 1}. ${s.customer_name ?? 'Stop'}`,
+        lat: Number(s.lat),
+        lng: Number(s.lng),
+        paid: s.status === 'paid',
+        amount: formatCurrency(s.emi || s.outstanding_balance),
+      })),
+    [stops],
+  );
+  const unmapped = stops.length - mapStops.length;
+
+  function goNavigate(stop: Stop) {
+    const dest = stop.address?.trim() || stop.customer_name || '';
+    if (!dest) return;
+    window.open(directionsUrl(dest, myPos), '_blank', 'noopener,noreferrer');
   }
 
   if (loading) {
@@ -105,17 +162,41 @@ export default function AgentRouteScreen({ onNavigate }: { onNavigate: (id: stri
     <div className="space-y-5 animate-fade-in">
       <PageHeader
         title="Today's Route"
-        subtitle={`${stops.length} stops • ${stats.distance} km estimated`}
+        subtitle={`${stops.length} stop${stops.length === 1 ? '' : 's'} assigned today`}
         actions={
-          <button onClick={() => onNavigate('collections')} className="btn-primary text-sm font-semibold px-4 py-2">
-            Start Collecting
-          </button>
+          <div className="flex items-center gap-2">
+            <button className="btn-secondary" onClick={() => load(true)} disabled={refreshing} title="Refresh">
+              <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">Refresh</span>
+            </button>
+            <button onClick={() => onNavigate('collections')} className="btn-primary text-sm font-semibold px-4 py-2">
+              Start Collecting
+            </button>
+          </div>
         }
       />
 
+      {/* Live location status */}
+      <div className={`flex items-center gap-2 text-xs rounded-xl px-3.5 py-2.5 ${
+        geoState === 'ok' ? 'bg-emerald-50 border border-emerald-200 text-emerald-700'
+        : geoState === 'denied' ? 'bg-amber-50 border border-amber-200 text-amber-700'
+        : 'bg-ink-50 border border-ink-200 text-ink-500'
+      }`}>
+        <LocateFixed className={`w-4 h-4 shrink-0 ${geoState === 'locating' ? 'animate-pulse' : ''}`} />
+        {geoState === 'ok' && <span>Live location on — directions will start from where you are.</span>}
+        {geoState === 'locating' && <span>Getting your location…</span>}
+        {geoState === 'idle' && <span>Location not enabled yet.</span>}
+        {geoState === 'denied' && (
+          <span className="flex items-center gap-2">
+            Location off — directions still open to the customer.
+            <button onClick={locate} className="underline font-semibold">Enable</button>
+          </span>
+        )}
+      </div>
+
       {stops.length === 0 && (
         <EmptyState
-          icon={Map}
+          icon={MapIcon}
           title="No route assigned"
           description="You have no active or overdue customers assigned today."
         />
@@ -123,138 +204,74 @@ export default function AgentRouteScreen({ onNavigate }: { onNavigate: (id: stri
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <StatBox icon={Users} label="Total Stops" value={String(stats.total)} tone="bg-brand-50 text-brand-600" />
-        <StatBox
-          icon={CheckCircle2}
-          label="Completed"
-          value={String(stats.completed)}
-          tone="bg-emerald-50 text-emerald-600"
-        />
-        <StatBox
-          icon={Clock}
-          label="Remaining"
-          value={String(stats.remaining)}
-          tone="bg-amber-50 text-amber-600"
-        />
-        <StatBox
-          icon={RouteIcon}
-          label="Distance"
-          value={`${stats.distance} km`}
-          tone="bg-violet-50 text-violet-600"
-        />
+        <StatBox icon={CheckCircle2} label="Completed" value={String(stats.completed)} tone="bg-emerald-50 text-emerald-600" />
+        <StatBox icon={Clock} label="Remaining" value={String(stats.remaining)} tone="bg-amber-50 text-amber-600" />
+        <StatBox icon={Wallet} label="Pending" value={formatCurrency(stats.pendingAmount)} tone="bg-violet-50 text-violet-600" />
       </div>
 
-      <div className="card p-0 overflow-hidden animate-slide-up">
-        <div className="relative h-72 sm:h-80 bg-gradient-to-br from-brand-100 via-emerald-50 to-cyan-100 overflow-hidden">
-          <svg className="absolute inset-0 w-full h-full" xmlns="http://www.w3.org/2000/svg">
-            <defs>
-              <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
-                <path d="M 32 0 L 0 0 0 32" fill="none" stroke="rgba(255,255,255,0.55)" strokeWidth="1" />
-              </pattern>
-            </defs>
-            <rect width="100%" height="100%" fill="url(#grid)" />
-            <path
-              d="M 8 88 Q 60 40 120 70 T 240 60 T 340 120 T 460 180"
-              fill="none"
-              stroke="rgba(37,99,235,0.25)"
-              strokeWidth="10"
-            />
-            {stops.length > 1 && (
-              <polyline
-                points={stops
-                  .map((s) => `${(s.pin.x / 100) * 480},${(s.pin.y / 100) * 320}`)
-                  .join(' ')}
-                fill="none"
-                stroke="#a87615"
-                strokeWidth="3"
-                strokeDasharray="8 6"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            )}
-          </svg>
-
-          <div className="absolute" style={{ left: '46%', top: '50%' }}>
-            <div className="relative">
-              <span className="absolute inset-0 rounded-full bg-cyan-400 animate-ping opacity-60" />
-              <div className="relative w-7 h-7 rounded-full bg-cyan-500 border-2 border-white shadow-lg flex items-center justify-center">
-                <Navigation className="w-3.5 h-3.5 text-white" />
-              </div>
-              <span className="absolute -bottom-4 left-1/2 -translate-x-1/2 whitespace-nowrap text-[10px] font-bold text-cyan-700 bg-white/80 px-1.5 py-0.5 rounded">
-                You
-              </span>
-            </div>
-          </div>
-
-          {stops.map((s, idx) => {
-            const paid = s.status === 'paid';
-            return (
-              <div
-                key={s.id}
-                className="absolute -translate-x-1/2 -translate-y-full"
-                style={{ left: `${s.pin.x}%`, top: `${s.pin.y}%` }}
-              >
-                <div className="flex flex-col items-center">
-                  <div
-                    className={`w-7 h-7 rounded-full flex items-center justify-center border-2 border-white shadow-lg ${
-                      paid ? 'bg-emerald-500' : 'bg-rose-500'
-                    }`}
-                  >
-                    <MapPin className="w-3.5 h-3.5 text-white" fill="currentColor" />
-                  </div>
-                  <div className="w-0.5 h-2 bg-rose-500/60" />
-                  <span className="mt-0.5 text-[10px] font-bold text-ink-800 bg-white/80 px-1.5 py-0.5 rounded shadow-sm whitespace-nowrap">
-                    {idx + 1}. {(s.customer_name ?? 'Stop').split(' ')[0]}
-                  </span>
-                </div>
-              </div>
-            );
-          })}
-
-          <div className="absolute bottom-3 right-3 flex flex-col gap-1 bg-white/85 backdrop-blur rounded-lg p-2 text-[10px] font-semibold text-ink-700">
-            <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-rose-500" /> Pending
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Paid
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-cyan-500" /> You
-            </div>
-          </div>
-
-          <div className="absolute top-3 left-3 bg-white/85 backdrop-blur rounded-lg px-2.5 py-1.5 text-xs font-bold text-ink-800 flex items-center gap-1.5">
-            <Map className="w-3.5 h-3.5 text-brand-600" /> Route Map
-          </div>
+      {mapStops.length > 0 ? (
+        <div className="card p-0 overflow-hidden animate-slide-up">
+          <RouteMap stops={mapStops} me={myPos} />
+          {unmapped > 0 && (
+            <p className="text-[11px] text-ink-400 px-4 py-2 border-t border-ink-100">
+              {unmapped} stop{unmapped === 1 ? '' : 's'} not on the map yet — set the customer's location in Customers.
+            </p>
+          )}
         </div>
-      </div>
+      ) : stops.length > 0 && (
+        <div className="card p-6 text-center">
+          <MapIcon className="w-8 h-8 text-ink-300 mx-auto mb-2" />
+          <p className="text-sm font-semibold text-ink-700">No pinned locations yet</p>
+          <p className="text-xs text-ink-400 mt-1">Set each customer's location in Customers (pin from address or capture GPS) to see them on the live map. Navigate still works below.</p>
+        </div>
+      )}
 
       <div className="space-y-3">
         {stops.map((stop, idx) => (
-          <div
-            key={stop.id}
-            className="card p-4 flex items-center gap-3 animate-slide-up hover:shadow-card-hover transition-all"
-          >
-            <div className="w-10 h-10 rounded-xl bg-brand-50 text-brand-600 flex items-center justify-center font-bold text-sm flex-shrink-0">
-              {idx + 1}
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2">
-                <p className="text-sm font-bold text-ink-900 truncate">{stop.customer_name ?? 'Unknown'}</p>
-                <StatusBadge status={stop.status} />
+          <div key={stop.id} className="card p-4 animate-slide-up hover:shadow-card-hover transition-all">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-brand-50 text-brand-600 flex items-center justify-center font-bold text-sm flex-shrink-0">
+                {idx + 1}
               </div>
-              <div className="flex items-center gap-2 text-xs text-ink-500 mt-0.5">
-                <Badge color="gray">{stop.loan_number}</Badge>
-                <span className="font-semibold text-ink-700">
-                  {formatCurrency(stop.emi || stop.outstanding_balance)}
-                </span>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-bold text-ink-900 truncate">{stop.customer_name ?? 'Unknown'}</p>
+                  <StatusBadge status={stop.status} />
+                </div>
+                <div className="flex items-center gap-2 text-xs text-ink-500 mt-0.5">
+                  <Badge color="gray">{stop.loan_number}</Badge>
+                  <span className="font-semibold text-ink-700">{formatCurrency(stop.emi || stop.outstanding_balance)}</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {stop.mobile && (
+                  <a
+                    href={`tel:${stop.mobile}`}
+                    className="inline-flex items-center justify-center w-10 h-10 rounded-lg border border-ink-200 text-ink-600 hover:border-emerald-300 hover:text-emerald-600 transition-colors"
+                    title={`Call ${stop.mobile}`}
+                  >
+                    <Phone className="w-4 h-4" />
+                  </a>
+                )}
+                <button
+                  onClick={() => goNavigate(stop)}
+                  disabled={!stop.address && !stop.customer_name}
+                  className="btn-primary text-xs font-semibold px-3 py-2.5 rounded-lg flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  <Navigation className="w-3.5 h-3.5" /> Navigate
+                </button>
               </div>
             </div>
-            <button
-              onClick={() => navigateTo(stop.customer_name ?? 'stop')}
-              className="btn-primary text-xs font-semibold px-3 py-2.5 rounded-lg flex items-center gap-1.5 flex-shrink-0"
-            >
-              <Navigation className="w-3.5 h-3.5" /> Navigate
-            </button>
+            {stop.address ? (
+              <p className="text-xs text-ink-500 mt-2.5 flex items-start gap-1.5">
+                <MapPin className="w-3.5 h-3.5 mt-0.5 shrink-0 text-ink-400" />
+                <span className="line-clamp-2">{stop.address}</span>
+              </p>
+            ) : (
+              <p className="text-xs text-amber-600 mt-2.5 flex items-center gap-1.5">
+                <MapPin className="w-3.5 h-3.5 shrink-0" /> No address on file — add it in Customers for exact directions.
+              </p>
+            )}
           </div>
         ))}
       </div>

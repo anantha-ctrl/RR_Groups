@@ -71,10 +71,62 @@
   }
 }
 
+/* Route map: always-on customer name labels on each pin */
+.route-pin-label {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #0d1226;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  white-space: nowrap;
+}
+.route-pin-label::before {
+  display: none; /* hide Leaflet's default tooltip arrow */
+}
+
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
 .no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;
+}
+
+/* ── Print: show ONLY the tagged receipt, top-centered, at a clean size ──
+   Covers both receipt conventions used in the app: .printable and .print-area. */
+@media print {
+  /* Hide the whole app… */
+  body * {
+    visibility: hidden !important;
+  }
+  /* …except the printable receipt and its contents. */
+  .printable,
+  .printable *,
+  .print-area,
+  .print-area * {
+    visibility: visible !important;
+  }
+  /* Lift it out of the modal and place it neatly at the top-center. */
+  .printable,
+  .print-area {
+    position: fixed !important;
+    left: 0 !important;
+    right: 0 !important;
+    top: 0 !important;
+    margin: 0 auto !important;
+    width: auto !important;
+    max-width: 420px !important;
+    box-shadow: none !important;
+    background: #fff !important;
+  }
+  /* Elements explicitly excluded from print (e.g. action buttons). */
+  .no-print {
+    display: none !important;
+  }
+  @page {
+    margin: 12mm;
+  }
 }

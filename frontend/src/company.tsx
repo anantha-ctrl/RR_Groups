@@ -15,12 +15,18 @@ const DEFAULT_NAME = 'RR Groups';
 interface CompanyState {
   name: string;
   logoUrl: string;
+  address: string;
+  contact: string;
+  gst: string;
   refresh: () => Promise<void>;
 }
 
 const CompanyContext = createContext<CompanyState>({
   name: DEFAULT_NAME,
   logoUrl: DEFAULT_LOGO,
+  address: '',
+  contact: '',
+  gst: '',
   refresh: async () => { },
 });
 
@@ -28,15 +34,24 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   const { profile } = useAuth();
   const [name, setName] = useState(DEFAULT_NAME);
   const [logoUrl, setLogoUrl] = useState(DEFAULT_LOGO);
+  const [address, setAddress] = useState('');
+  const [contact, setContact] = useState('');
+  const [gst, setGst] = useState('');
 
   const refresh = useCallback(async () => {
     const { data } = await supabase.from('settings').select('*').limit(1).maybeSingle();
     if (data) {
       setName((data.company_name ?? '').trim() || DEFAULT_NAME);
       setLogoUrl((data.logo_url ?? '').trim() || DEFAULT_LOGO);
+      setAddress((data.address ?? '').trim());
+      setContact((data.contact_number ?? '').trim());
+      setGst((data.gst_number ?? '').trim());
     } else {
       setName(DEFAULT_NAME);
       setLogoUrl(DEFAULT_LOGO);
+      setAddress('');
+      setContact('');
+      setGst('');
     }
   }, []);
 
@@ -45,7 +60,7 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   }, [profile?.id, refresh]);
 
   return (
-    <CompanyContext.Provider value={{ name, logoUrl, refresh }}>
+    <CompanyContext.Provider value={{ name, logoUrl, address, contact, gst, refresh }}>
       {children}
     </CompanyContext.Provider>
   );

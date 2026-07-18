@@ -14,6 +14,7 @@ import {
   UserCog,
   Shield,
   PiggyBank,
+  Banknote,
   LogOut,
   Menu,
   Search,
@@ -44,6 +45,7 @@ export const NAV_ITEMS: NavItem[] = [
   { id: 'overdue', label: 'Overdue', icon: AlertCircle, roles: ['admin', 'agent'], group: 'Manage' },
   { id: 'chit-groups', label: 'Chit Groups', icon: Group, roles: ['admin'], group: 'Manage' },
   { id: 'funds', label: 'Funds', icon: PiggyBank, roles: ['admin', 'agent'], group: 'Manage' },
+  { id: 'handovers', label: 'Cash Handover', icon: Banknote, roles: ['admin', 'agent'], group: 'Manage' },
   { id: 'agent-route', label: 'Route Map', icon: Map, roles: ['agent'], group: 'Agent' },
   // Customer self-service
   { id: 'my-loans', label: 'My Loans', icon: Landmark, roles: ['customer'], group: 'My Account' },

@@ -121,8 +121,9 @@ export default function LoansScreen({ onNavigate }: { onNavigate: (id: string) =
 
     if (editing.loan_type === 'daily') {
       const days = editing.daily_plan === '60d' ? 60 : 100;
+      const mode = editing.daily_plan === '100d' ? 'upfront' : 'added';
       if (principal <= 0 || !sd) return { emi: 0, interest: 0, repayment: 0, disbursed: 0, sched: [], installmentLabel: 'Daily Installment' };
-      const { installment, totalInterest, totalRepayment, schedule, disbursedAmount } = buildDailySchedule(principal, rate, days, sd);
+      const { installment, totalInterest, totalRepayment, schedule, disbursedAmount } = buildDailySchedule(principal, rate, days, sd, mode);
       return { emi: installment, interest: totalInterest, repayment: totalRepayment, disbursed: disbursedAmount, sched: schedule, installmentLabel: 'Daily Installment' };
     }
 
@@ -169,7 +170,8 @@ export default function LoansScreen({ onNavigate }: { onNavigate: (id: string) =
       total_repayment = r.installment * 10; loan_duration = 10;
     } else if (editing.loan_type === 'daily') {
       const days = editing.daily_plan === '60d' ? 60 : 100;
-      const r = buildDailySchedule(principal, rate, days, editing.start_date);
+      const mode = editing.daily_plan === '100d' ? 'upfront' : 'added';
+      const r = buildDailySchedule(principal, rate, days, editing.start_date, mode);
       emi = r.installment; total_interest = r.totalInterest;
       total_repayment = r.totalRepayment; loan_duration = days;
     } else {
@@ -519,22 +521,31 @@ export default function LoansScreen({ onNavigate }: { onNavigate: (id: string) =
                       × {editing?.loan_type === 'weekly' ? '10 weeks' : `${editing?.loan_duration} days`} = {formatCurrency(calc.repayment)}
                     </p>
                   </div>
-                  <div className="rounded-2xl bg-amber-50 border border-amber-100 p-4">
-                    <p className="text-xs text-amber-700 font-medium">
-                      {editing?.loan_type === 'daily' ? 'Interest (added)' : 'Upfront Interest (deducted)'}
-                    </p>
-                    <p className="text-lg font-bold text-amber-900 mt-1">{formatCurrency(calc.interest)}</p>
-                    <p className="text-[10px] text-amber-500 mt-0.5">
-                      {editing?.loan_type === 'daily' ? 'Added to repayment' : 'Collected at disbursement'}
-                    </p>
-                  </div>
-                  <div className="rounded-2xl bg-emerald-50 border border-emerald-100 p-4">
-                    <p className="text-xs text-emerald-700 font-medium">Amount Disbursed to Borrower</p>
-                    <p className="text-lg font-bold text-emerald-900 mt-1">{formatCurrency(calc.disbursed ?? 0)}</p>
-                    <p className="text-[10px] text-emerald-500 mt-0.5">
-                      {editing?.loan_type === 'daily' ? 'Full loan amount' : 'Principal − Interest'}
-                    </p>
-                  </div>
+                  {(() => {
+                    // 60-day daily ADDS interest on top; everything else (weekly,
+                    // 100-day daily) DEDUCTS interest upfront from the disbursed amount.
+                    const isAdded = editing?.loan_type === 'daily' && editing?.daily_plan === '60d';
+                    return (
+                      <>
+                        <div className="rounded-2xl bg-amber-50 border border-amber-100 p-4">
+                          <p className="text-xs text-amber-700 font-medium">
+                            {isAdded ? 'Interest (added)' : 'Interest (deducted)'}
+                          </p>
+                          <p className="text-lg font-bold text-amber-900 mt-1">{formatCurrency(calc.interest)}</p>
+                          <p className="text-[10px] text-amber-500 mt-0.5">
+                            {isAdded ? 'Added to repayment' : 'Deducted upfront'}
+                          </p>
+                        </div>
+                        <div className="rounded-2xl bg-emerald-50 border border-emerald-100 p-4">
+                          <p className="text-xs text-emerald-700 font-medium">Amount Disbursed to Borrower</p>
+                          <p className="text-lg font-bold text-emerald-900 mt-1">{formatCurrency(calc.disbursed ?? 0)}</p>
+                          <p className="text-[10px] text-emerald-500 mt-0.5">
+                            {isAdded ? 'Full loan amount' : 'Principal − Interest'}
+                          </p>
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
