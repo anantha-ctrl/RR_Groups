@@ -116,7 +116,7 @@ export function TrendChart({
   const yTicks = 4;
 
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ height }}>
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-auto" preserveAspectRatio="xMidYMid meet">
       <defs>
         <linearGradient id="trendGrad" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor={color} stopOpacity="0.25" />
@@ -195,6 +195,155 @@ export function DonutChart({
               <span className="text-xs text-ink-600">{d.label}</span>
             </div>
             <span className="text-xs font-semibold text-ink-800">{d.value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Dependency-free 3D pie chart. The top face is drawn on a tilted ellipse and
+ * each visible front slice is extruded downward to form a solid side wall, with
+ * glossy radial-gradient shading — no external chart library needed.
+ */
+export function Pie3DChart({
+  data,
+  size = 240,
+  depth = 24,
+  tilt = 0.58,
+  centerLabel,
+  formatValue = (v: number) => String(Math.round(v)),
+}: {
+  data: { label: string; value: number; color: string }[];
+  size?: number;
+  depth?: number;
+  tilt?: number;
+  centerLabel?: string;
+  formatValue?: (v: number) => string;
+}) {
+  const slices = data.filter((d) => d.value > 0);
+  const total = slices.reduce((s, d) => s + d.value, 0);
+  const w = size;
+  const h = size * tilt + depth + 8;
+  const cx = w / 2;
+  const rx = w / 2 - 8;
+  const ry = rx * tilt;
+  const cy = ry + 6;
+
+  const uid = `pie3d-${Math.random().toString(36).slice(2, 8)}`;
+
+  // Darken a #rrggbb colour by a factor for the side walls / gradients.
+  const shade = (hex: string, f: number) => {
+    const n = parseInt(hex.replace('#', ''), 16);
+    const r = Math.max(0, Math.min(255, Math.round(((n >> 16) & 255) * f)));
+    const g = Math.max(0, Math.min(255, Math.round(((n >> 8) & 255) * f)));
+    const b = Math.max(0, Math.min(255, Math.round((n & 255) * f)));
+    return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0')}`;
+  };
+
+  const pt = (a: number, dy = 0) => [cx + rx * Math.cos(a), cy + ry * Math.sin(a) + dy] as const;
+
+  // Build angular segments, starting at the top (−90°) going clockwise.
+  type Seg = { s: number; e: number; color: string; label: string; value: number };
+  const segs: Seg[] = [];
+  let cum = -Math.PI / 2;
+  for (const d of slices) {
+    const frac = total ? d.value / total : 0;
+    const s = cum;
+    const e = cum + frac * 2 * Math.PI;
+    cum = e;
+    segs.push({ s, e, color: d.color, label: d.label, value: d.value });
+  }
+
+  // Front region (visible side walls) is where sin(angle) > 0, i.e. (0, π).
+  const FRONT_START = 0;
+  const FRONT_END = Math.PI;
+  const wallFor = (s: number, e: number) => {
+    // Normalise to [0, 2π) and split wrap-arounds so we can intersect the front.
+    const parts: [number, number][] = [];
+    let a0 = s;
+    let a1 = e;
+    const TWO = Math.PI * 2;
+    a0 = ((a0 % TWO) + TWO) % TWO;
+    a1 = a0 + (e - s);
+    const raw: [number, number][] = a1 > TWO ? [[a0, TWO], [0, a1 - TWO]] : [[a0, a1]];
+    for (const [x0, x1] of raw) {
+      const w0 = Math.max(x0, FRONT_START);
+      const w1 = Math.min(x1, FRONT_END);
+      if (w1 > w0) parts.push([w0, w1]);
+    }
+    return parts;
+  };
+
+  const arc = (a0: number, a1: number, dy: number, sweep: 0 | 1) => {
+    const [x0, y0] = pt(a0, dy);
+    const [x1, y1] = pt(a1, dy);
+    const large = Math.abs(a1 - a0) > Math.PI ? 1 : 0;
+    return { start: [x0, y0] as const, d: `A${rx},${ry} 0 ${large} ${sweep} ${x1},${y1}` };
+  };
+
+  return (
+    <div className="flex flex-col items-center gap-4 w-full">
+      <svg
+        viewBox={`0 0 ${w} ${h}`}
+        className="w-full h-auto overflow-visible"
+        style={{ maxWidth: w, filter: 'drop-shadow(0 10px 12px rgba(15,23,42,0.18))' }}
+        preserveAspectRatio="xMidYMid meet"
+      >
+        <defs>
+          {segs.map((sg, i) => (
+            <radialGradient key={i} id={`${uid}-g${i}`} cx="42%" cy="34%" r="72%">
+              <stop offset="0%" stopColor={shade(sg.color, 1.22)} />
+              <stop offset="62%" stopColor={sg.color} />
+              <stop offset="100%" stopColor={shade(sg.color, 0.82)} />
+            </radialGradient>
+          ))}
+        </defs>
+
+        {/* Side walls (extruded front rim), drawn first so the top face sits over them. */}
+        {segs.map((sg, i) =>
+          wallFor(sg.s, sg.e).map(([w0, w1], j) => {
+            const top = arc(w0, w1, 0, 1);
+            const bottom = arc(w1, w0, depth, 0);
+            const path = `M${top.start[0]},${top.start[1]} ${top.d} L${bottom.start[0]},${bottom.start[1]} ${bottom.d} Z`;
+            return <path key={`${i}-${j}`} d={path} fill={shade(sg.color, 0.7)} />;
+          }),
+        )}
+
+        {/* Top faces. */}
+        {segs.map((sg, i) => {
+          if (segs.length === 1) {
+            // Single slice = full ellipse.
+            return (
+              <ellipse key={i} cx={cx} cy={cy} rx={rx} ry={ry} fill={`url(#${uid}-g${i})`} stroke="rgba(255,255,255,0.5)" strokeWidth="1" />
+            );
+          }
+          const top = arc(sg.s, sg.e, 0, 1);
+          const path = `M${cx},${cy} L${top.start[0]},${top.start[1]} ${top.d} Z`;
+          return <path key={i} d={path} fill={`url(#${uid}-g${i})`} stroke="rgba(255,255,255,0.45)" strokeWidth="1" />;
+        })}
+
+        {centerLabel && (
+          <text x={cx} y={cy + 4} textAnchor="middle" className="fill-white font-bold" fontSize="13" style={{ pointerEvents: 'none', textShadow: '0 1px 2px rgba(0,0,0,0.35)' }}>
+            {centerLabel}
+          </text>
+        )}
+      </svg>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 w-full max-w-sm mx-auto">
+        {slices.map((d, i) => (
+          <div key={i} className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="w-3 h-3 rounded-md shrink-0 shadow-sm" style={{ background: d.color }} />
+              <span className="text-xs text-ink-600 truncate">{d.label}</span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <span className="text-xs font-bold text-ink-800 tabular-nums">{formatValue(d.value)}</span>
+              <span className="text-[10px] font-semibold text-ink-400 w-9 text-right tabular-nums">
+                {total ? Math.round((d.value / total) * 100) : 0}%
+              </span>
+            </div>
           </div>
         ))}
       </div>

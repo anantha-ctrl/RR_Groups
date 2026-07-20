@@ -79,6 +79,13 @@ export function formatDateTime(value: string | Date | null): string {
   });
 }
 
+export function formatTime(value: string | Date | null): string {
+  if (!value) return '';
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+}
+
 export function maskAadhaar(value: string | null | undefined): string {
   if (!value) return '-';
   return value.replace(/(\d{4})\d{4}(\d{4})/, '$1-XXXX-$2').replace(/-/g, '-');

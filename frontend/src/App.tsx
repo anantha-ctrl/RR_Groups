@@ -26,9 +26,11 @@ import CustomerDashboard from './screens/CustomerDashboard';
 import CustomerLoansScreen from './screens/CustomerLoansScreen';
 import CustomerScheduleScreen from './screens/CustomerScheduleScreen';
 import CustomerPaymentsScreen from './screens/CustomerPaymentsScreen';
+import CustomerChitsScreen from './screens/CustomerChitsScreen';
 import ProfileScreen from './screens/ProfileScreen';
 import FundsScreen from './screens/FundsScreen';
 import HandoversScreen from './screens/HandoversScreen';
+import FieldMapScreen from './screens/FieldMapScreen';
 
 const TITLE_MAP: Record<string, string> = {
   dashboard: 'Dashboard',
@@ -41,6 +43,7 @@ const TITLE_MAP: Record<string, string> = {
   funds: 'Funds',
   'my-funds': 'My Funds',
   handovers: 'Cash Handover',
+  'field-map': 'Field Map',
   reports: 'Reports & Analytics',
   notifications: 'Notifications',
   settings: 'Settings',
@@ -50,6 +53,7 @@ const TITLE_MAP: Record<string, string> = {
   'my-loans': 'My Loans',
   'my-schedule': 'Repayment Schedule',
   'my-payments': 'Payment History',
+  'my-chits': 'My Chits',
   profile: 'My Profile',
 };
 
@@ -127,6 +131,8 @@ function Shell() {
         return <CustomerScheduleScreen />;
       case 'my-payments':
         return <CustomerPaymentsScreen />;
+      case 'my-chits':
+        return <CustomerChitsScreen />;
       case 'customers':
         return <CustomersScreen onNavigate={navigate} />;
       case 'agents':
@@ -150,6 +156,8 @@ function Shell() {
         return <FundsScreen />;
       case 'handovers':
         return <HandoversScreen />;
+      case 'field-map':
+        return <FieldMapScreen />;
       case 'reports':
         return <ReportsScreen onNavigate={navigate} />;
       case 'notifications':

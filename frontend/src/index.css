@@ -86,6 +86,16 @@
 .route-pin-label::before {
   display: none; /* hide Leaflet's default tooltip arrow */
 }
+.route-pin-label .rpl-name {
+  font-weight: 700;
+  color: #0d1226;
+}
+.route-pin-label .rpl-sub {
+  font-weight: 600;
+  font-size: 10px;
+  color: #64748b;
+  margin-top: 1px;
+}
 
 .no-scrollbar::-webkit-scrollbar {
   display: none;

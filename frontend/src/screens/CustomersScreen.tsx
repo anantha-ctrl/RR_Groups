@@ -125,6 +125,7 @@ export default function CustomersScreen({ onNavigate }: { onNavigate: (id: strin
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [geoBusy, setGeoBusy] = useState<'idle' | 'geocoding' | 'gps'>('idle');
   const photoInput = useRef<HTMLInputElement>(null);
+  const lastGeoAddr = useRef(''); // last address we resolved to coordinates
 
   const [viewing, setViewing] = useState<Row | null>(null);
   const [deleting, setDeleting] = useState<Row | null>(null);
@@ -216,6 +217,28 @@ export default function CustomersScreen({ onNavigate }: { onNavigate: (id: strin
     }
   };
 
+  // Remember the address already reflected by the current coords when the modal opens,
+  // so we don't re-geocode an unchanged existing address.
+  useEffect(() => {
+    if (modalOpen) lastGeoAddr.current = (editing?.address ?? '').trim();
+  }, [modalOpen, editing]);
+
+  // Auto-fetch coordinates from the address as the user types (debounced).
+  useEffect(() => {
+    if (!modalOpen) return;
+    const addr = form.address.trim();
+    if (!addr || addr === lastGeoAddr.current) return;
+    const t = setTimeout(async () => {
+      setGeoBusy('geocoding');
+      const p = await geocodeAddress(addr);
+      setGeoBusy('idle');
+      if (!p) return;
+      lastGeoAddr.current = addr;
+      setForm((f) => ({ ...f, latitude: p.lat.toFixed(7), longitude: p.lng.toFixed(7) }));
+    }, 900);
+    return () => clearTimeout(t);
+  }, [form.address, modalOpen]);
+
   // Look up coordinates from the typed address (free OpenStreetMap geocoder).
   const pinFromAddress = async () => {
     if (!form.address.trim()) { flash('Enter an address first', 'err'); return; }
@@ -223,6 +246,7 @@ export default function CustomersScreen({ onNavigate }: { onNavigate: (id: strin
     const p = await geocodeAddress(form.address);
     setGeoBusy('idle');
     if (!p) { flash('Could not find that address on the map', 'err'); return; }
+    lastGeoAddr.current = form.address.trim();
     setForm((f) => ({ ...f, latitude: p.lat.toFixed(7), longitude: p.lng.toFixed(7) }));
     flash('Location pinned from address');
   };
@@ -233,6 +257,7 @@ export default function CustomersScreen({ onNavigate }: { onNavigate: (id: strin
     setGeoBusy('gps');
     navigator.geolocation.getCurrentPosition(
       (pos) => {
+        lastGeoAddr.current = form.address.trim(); // keep GPS coords; don't auto-override from address
         setForm((f) => ({ ...f, latitude: pos.coords.latitude.toFixed(7), longitude: pos.coords.longitude.toFixed(7) }));
         setGeoBusy('idle');
         flash('Current location captured');
@@ -260,10 +285,10 @@ export default function CustomersScreen({ onNavigate }: { onNavigate: (id: strin
       let lat = form.latitude.trim() ? parseFloat(form.latitude) : null;
       let lng = form.longitude.trim() ? parseFloat(form.longitude) : null;
       const addr = form.address.trim();
-      const addressChanged = !editing || (editing.address ?? '').trim() !== addr;
-      if (addr && (lat == null || lng == null || addressChanged)) {
+      // Geocode on save only if not already resolved live (or coords missing).
+      if (addr && (lat == null || lng == null || addr !== lastGeoAddr.current)) {
         const p = await geocodeAddress(addr);
-        if (p) { lat = p.lat; lng = p.lng; }
+        if (p) { lat = p.lat; lng = p.lng; lastGeoAddr.current = addr; }
       }
       const payload = {
         full_name: form.full_name.trim(),
@@ -493,9 +518,13 @@ export default function CustomersScreen({ onNavigate }: { onNavigate: (id: strin
               <p className="text-xs font-semibold text-ink-600 flex items-center gap-1.5">
                 <MapPin className="w-3.5 h-3.5 text-brand-600" /> Map Location <span className="font-normal text-ink-400">(for agent route)</span>
               </p>
-              {form.latitude && form.longitude && (
+              {geoBusy === 'geocoding' ? (
+                <span className="text-[11px] text-brand-600 font-semibold flex items-center gap-1">
+                  <Loader2 className="w-3 h-3 animate-spin" /> Finding location…
+                </span>
+              ) : form.latitude && form.longitude ? (
                 <span className="text-[11px] text-emerald-600 font-semibold">Pinned ✓</span>
-              )}
+              ) : null}
             </div>
             <div className="flex flex-wrap gap-2 mb-3">
               <button type="button" onClick={pinFromAddress} disabled={geoBusy !== 'idle'} className="btn-secondary text-xs px-3 py-2">

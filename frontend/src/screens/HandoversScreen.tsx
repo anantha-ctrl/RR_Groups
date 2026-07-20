@@ -7,7 +7,7 @@ import { supabase } from '../supabaseClient';
 import { useAuth } from '../auth';
 import { formatCurrency, formatDate } from '../calc';
 import { PageHeader, EmptyState, Badge } from '../components/ui';
-import type { Handover, Collection, Profile } from '../types';
+import type { Handover, Collection, Profile, FundPayment } from '../types';
 
 function todayISO() {
   const d = new Date();
@@ -23,6 +23,50 @@ interface AgentTally {
   onlineCollected: number;
   handedOver: number;
   pending: number;
+  todayCollected: number;   // collected today (loans + funds)
+  todayCash: number;
+  todayOnline: number;
+}
+
+// Collected = loan collections + fund deposits the agent collected (both must be settled).
+function tallyFor(
+  cols: Collection[],
+  fps: FundPayment[],
+  hos: Handover[],
+  agentId: string,
+  agentName: string,
+): AgentTally {
+  const colTotal = cols.reduce((s, c) => s + Number(c.collection_amount || 0), 0);
+  const fundTotal = fps.reduce((s, f) => s + Number(f.amount || 0), 0);
+  const collected = colTotal + fundTotal;
+  const cashCollected =
+    cols.filter((c) => c.payment_method === 'cash').reduce((s, c) => s + Number(c.collection_amount || 0), 0) +
+    fps.filter((f) => f.payment_method === 'cash').reduce((s, f) => s + Number(f.amount || 0), 0);
+  const handedOver = hos.reduce((s, h) => s + Number(h.total_amount || 0), 0);
+
+  // Today's slice (loans by collection_date, funds by payment_date).
+  const today = todayISO();
+  const todayCols = cols.filter((c) => (c.collection_date ?? '').slice(0, 10) === today);
+  const todayFps = fps.filter((f) => (f.payment_date ?? '').slice(0, 10) === today);
+  const todayCollected =
+    todayCols.reduce((s, c) => s + Number(c.collection_amount || 0), 0) +
+    todayFps.reduce((s, f) => s + Number(f.amount || 0), 0);
+  const todayCash =
+    todayCols.filter((c) => c.payment_method === 'cash').reduce((s, c) => s + Number(c.collection_amount || 0), 0) +
+    todayFps.filter((f) => f.payment_method === 'cash').reduce((s, f) => s + Number(f.amount || 0), 0);
+
+  return {
+    agentId,
+    agentName,
+    collected,
+    cashCollected,
+    onlineCollected: collected - cashCollected,
+    handedOver,
+    pending: Math.max(0, collected - handedOver),
+    todayCollected,
+    todayCash,
+    todayOnline: todayCollected - todayCash,
+  };
 }
 
 export default function HandoversScreen() {
@@ -32,6 +76,7 @@ export default function HandoversScreen() {
 
   const [handovers, setHandovers] = useState<Handover[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
+  const [fundPayments, setFundPayments] = useState<FundPayment[]>([]);
   const [agents, setAgents] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -42,21 +87,25 @@ export default function HandoversScreen() {
   const load = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
     if (isAgent && profile?.id) {
-      const [colRes, hoRes] = await Promise.all([
+      const [colRes, fpRes, hoRes] = await Promise.all([
         supabase.from('collections').select('*').eq('agent_id', profile.id),
+        supabase.from('fund_payments').select('*').eq('agent_id', profile.id),
         supabase.from('handovers').select('*').eq('agent_id', profile.id).order('created_at', { ascending: false }),
       ]);
       if (!activeRef.current) return;
       setCollections((colRes.data ?? []) as Collection[]);
+      setFundPayments((fpRes.data ?? []) as FundPayment[]);
       setHandovers((hoRes.data ?? []) as Handover[]);
     } else if (isAdmin) {
-      const [colRes, hoRes, agRes] = await Promise.all([
+      const [colRes, fpRes, hoRes, agRes] = await Promise.all([
         supabase.from('collections').select('*'),
+        supabase.from('fund_payments').select('*'),
         supabase.from('handovers').select('*').order('created_at', { ascending: false }),
         supabase.from('profiles').select('*').eq('role', 'agent'),
       ]);
       if (!activeRef.current) return;
       setCollections((colRes.data ?? []) as Collection[]);
+      setFundPayments((fpRes.data ?? []) as FundPayment[]);
       setHandovers((hoRes.data ?? []) as Handover[]);
       setAgents((agRes.data ?? []) as Profile[]);
     }
@@ -78,48 +127,32 @@ export default function HandoversScreen() {
   }, [toast]);
 
   // My own tally (agent).
-  const mine = useMemo<AgentTally>(() => {
-    const collected = collections.reduce((s, c) => s + Number(c.collection_amount || 0), 0);
-    const cashCollected = collections.filter((c) => c.payment_method === 'cash').reduce((s, c) => s + Number(c.collection_amount || 0), 0);
-    const handedOver = handovers.reduce((s, h) => s + Number(h.total_amount || 0), 0);
-    return {
-      agentId: profile?.id ?? '',
-      agentName: profile?.full_name ?? '',
-      collected,
-      cashCollected,
-      onlineCollected: collected - cashCollected,
-      handedOver,
-      pending: Math.max(0, collected - handedOver),
-    };
-  }, [collections, handovers, profile]);
+  const mine = useMemo<AgentTally>(
+    () => tallyFor(collections, fundPayments, handovers, profile?.id ?? '', profile?.full_name ?? ''),
+    [collections, fundPayments, handovers, profile],
+  );
 
   // Per-agent tallies (admin).
   const tallies = useMemo<AgentTally[]>(() => {
     if (!isAdmin) return [];
-    return agents.map((a) => {
-      const cols = collections.filter((c) => c.agent_id === a.id);
-      const hos = handovers.filter((h) => h.agent_id === a.id);
-      const collected = cols.reduce((s, c) => s + Number(c.collection_amount || 0), 0);
-      const cashCollected = cols.filter((c) => c.payment_method === 'cash').reduce((s, c) => s + Number(c.collection_amount || 0), 0);
-      const handedOver = hos.reduce((s, h) => s + Number(h.total_amount || 0), 0);
-      return {
-        agentId: a.id,
-        agentName: a.full_name,
-        collected,
-        cashCollected,
-        onlineCollected: collected - cashCollected,
-        handedOver,
-        pending: Math.max(0, collected - handedOver),
-      };
-    }).sort((x, y) => y.pending - x.pending);
-  }, [isAdmin, agents, collections, handovers]);
+    return agents
+      .map((a) => tallyFor(
+        collections.filter((c) => c.agent_id === a.id),
+        fundPayments.filter((f) => f.agent_id === a.id),
+        handovers.filter((h) => h.agent_id === a.id),
+        a.id,
+        a.full_name,
+      ))
+      .sort((x, y) => y.pending - x.pending);
+  }, [isAdmin, agents, collections, fundPayments, handovers]);
 
   const adminTotals = useMemo(() => {
     const collected = tallies.reduce((s, t) => s + t.collected, 0);
     const handedOver = tallies.reduce((s, t) => s + t.handedOver, 0);
     const pending = tallies.reduce((s, t) => s + t.pending, 0);
+    const todayCollected = tallies.reduce((s, t) => s + t.todayCollected, 0);
     const withPending = tallies.filter((t) => t.pending > 0.5).length;
-    return { collected, handedOver, pending, withPending };
+    return { collected, handedOver, pending, todayCollected, withPending };
   }, [tallies]);
 
   async function verify(h: Handover) {
@@ -188,7 +221,8 @@ function AgentView({ tally, handovers }: { tally: AgentTally; handovers: Handove
   return (
     <>
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
-        <SummaryTile label="Total Collected" value={formatCurrency(tally.collected)} icon={Coins} tone="blue" />
+        <SummaryTile label="Total Collected" value={formatCurrency(tally.collected)} icon={Coins} tone="blue"
+          sub={`Today: ${formatCurrency(tally.todayCollected)}`} />
         <SummaryTile label="Handed Over" value={formatCurrency(tally.handedOver)} icon={CheckCircle2} tone="emerald" />
         <SummaryTile label="Pending to Hand Over" value={formatCurrency(tally.pending)} icon={Wallet} tone="amber" highlight />
       </div>
@@ -201,6 +235,7 @@ function AgentView({ tally, handovers }: { tally: AgentTally; handovers: Handove
           <div className="min-w-0">
             <p className="text-xs font-semibold uppercase tracking-wide text-ink-500">Cash Collected</p>
             <p className="text-base sm:text-lg font-bold text-ink-900">{formatCurrency(tally.cashCollected)}</p>
+            <p className="text-[11px] font-semibold text-emerald-600">Today: {formatCurrency(tally.todayCash)}</p>
           </div>
         </div>
         <div className="card p-4 flex items-center gap-3">
@@ -210,6 +245,7 @@ function AgentView({ tally, handovers }: { tally: AgentTally; handovers: Handove
           <div className="min-w-0">
             <p className="text-xs font-semibold uppercase tracking-wide text-ink-500">Online / UPI</p>
             <p className="text-base sm:text-lg font-bold text-ink-900">{formatCurrency(tally.onlineCollected)}</p>
+            <p className="text-[11px] font-semibold text-violet-600">Today: {formatCurrency(tally.todayOnline)}</p>
           </div>
         </div>
       </div>
@@ -230,7 +266,7 @@ function AgentView({ tally, handovers }: { tally: AgentTally; handovers: Handove
 function AdminView({
   totals, tallies, handovers, onVerify,
 }: {
-  totals: { collected: number; handedOver: number; pending: number; withPending: number };
+  totals: { collected: number; handedOver: number; pending: number; todayCollected: number; withPending: number };
   tallies: AgentTally[];
   handovers: Handover[];
   onVerify: (h: Handover) => void;
@@ -238,7 +274,8 @@ function AdminView({
   return (
     <>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-        <SummaryTile label="Total Collected" value={formatCurrency(totals.collected)} icon={Coins} tone="blue" />
+        <SummaryTile label="Total Collected" value={formatCurrency(totals.collected)} icon={Coins} tone="blue"
+          sub={`Today: ${formatCurrency(totals.todayCollected)}`} />
         <SummaryTile label="Handed Over" value={formatCurrency(totals.handedOver)} icon={CheckCircle2} tone="emerald" />
         <SummaryTile label="Pending" value={formatCurrency(totals.pending)} icon={Wallet} tone="amber" highlight />
         <SummaryTile label="Agents with Dues" value={String(totals.withPending)} icon={Users} tone="rose" />
@@ -476,9 +513,9 @@ function HandoverForm({
 
 // ─────────────────────────── Small tile ───────────────────────────
 function SummaryTile({
-  label, value, icon: Icon, tone, highlight,
+  label, value, icon: Icon, tone, highlight, sub,
 }: {
-  label: string; value: string; icon: typeof Wallet; tone: 'blue' | 'emerald' | 'amber' | 'rose'; highlight?: boolean;
+  label: string; value: string; icon: typeof Wallet; tone: 'blue' | 'emerald' | 'amber' | 'rose'; highlight?: boolean; sub?: string;
 }) {
   const tones = {
     blue: 'bg-blue-50 text-blue-600 ring-blue-100',
@@ -494,6 +531,7 @@ function SummaryTile({
       <div className="min-w-0">
         <p className="text-xs font-semibold uppercase tracking-wide text-ink-500 truncate">{label}</p>
         <p className="text-base sm:text-lg font-bold text-ink-900 truncate">{value}</p>
+        {sub && <p className="text-[11px] font-semibold text-emerald-600 truncate">{sub}</p>}
       </div>
     </div>
   );

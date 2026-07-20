@@ -24,6 +24,7 @@ import {
   TextArea,
 } from '../components/ui';
 import { formatCurrency, formatDate } from '../calc';
+import { syncScheduleFromCollections } from '../schedule';
 import type { Loan, Collection } from '../types';
 
 interface CardState {
@@ -170,6 +171,10 @@ export default function AgentCollectionsScreen({ onNavigate }: { onNavigate: (id
     setTodayCollections((p) => [...p, data as Collection]);
     setCollectLoan(null);
     setReceipt(data as Collection);
+
+    // Apply this payment to the loan's repayment schedule so Paid/Balance/Status
+    // update in real time. Best-effort — the collection itself is already saved.
+    syncScheduleFromCollections(payload.loan_id).catch(() => {});
 
     // Push-notify admins and text the standing alert number. Best-effort —
     // the collection is already saved above regardless of outcome here.

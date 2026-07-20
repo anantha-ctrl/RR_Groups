@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Landmark, Wallet, CalendarClock, CheckCircle2, Loader2, ArrowRight,
-  IndianRupee, AlertCircle,
+  IndianRupee, AlertCircle, RefreshCw,
 } from 'lucide-react';
 import { supabase } from '../supabaseClient';
 import { useAuth } from '../auth';
-import { StatCard } from '../components/charts';
+import { StatCard, ChartCard, Pie3DChart } from '../components/charts';
 import { StatusBadge, EmptyState } from '../components/ui';
 import { formatCurrency, formatDate } from '../calc';
 import type { Loan, Collection, RepaymentSchedule } from '../types';
@@ -18,38 +18,51 @@ export default function CustomerDashboard({ onNavigate }: { onNavigate: (id: str
   const [schedule, setSchedule] = useState<RepaymentSchedule[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const activeRef = useRef(true);
+
+  const load = useCallback(async (isRefresh = false) => {
+    if (!cid) { setLoading(false); return; }
+    if (isRefresh) setRefreshing(true);
+    const { data: loanRows } = await supabase
+      .from('loans')
+      .select('*')
+      .eq('customer_id', cid)
+      .order('created_at', { ascending: false });
+    const myLoans = (loanRows ?? []) as Loan[];
+
+    const loanIds = myLoans.map((l) => l.id);
+    const [schedRes, colRes] = await Promise.all([
+      loanIds.length
+        ? supabase.from('repayment_schedule').select('*').in('loan_id', loanIds).order('due_date', { ascending: true })
+        : Promise.resolve({ data: [] as RepaymentSchedule[] }),
+      supabase.from('collections').select('*').eq('customer_id', cid).order('collection_date', { ascending: false }),
+    ]);
+
+    if (!activeRef.current) return;
+    setLoans(myLoans);
+    setSchedule((schedRes.data ?? []) as RepaymentSchedule[]);
+    setCollections((colRes.data ?? []) as Collection[]);
+    setLoading(false);
+    setRefreshing(false);
+  }, [cid]);
 
   useEffect(() => {
-    if (!cid) {
-      setLoading(false);
-      return;
-    }
-    let active = true;
-    (async () => {
-      setLoading(true);
-      const { data: loanRows } = await supabase
-        .from('loans')
-        .select('*')
-        .eq('customer_id', cid)
-        .order('created_at', { ascending: false });
-      const myLoans = (loanRows ?? []) as Loan[];
-
-      const loanIds = myLoans.map((l) => l.id);
-      const [schedRes, colRes] = await Promise.all([
-        loanIds.length
-          ? supabase.from('repayment_schedule').select('*').in('loan_id', loanIds).order('due_date', { ascending: true })
-          : Promise.resolve({ data: [] as RepaymentSchedule[] }),
-        supabase.from('collections').select('*').eq('customer_id', cid).order('collection_date', { ascending: false }),
-      ]);
-
-      if (!active) return;
-      setLoans(myLoans);
-      setSchedule((schedRes.data ?? []) as RepaymentSchedule[]);
-      setCollections((colRes.data ?? []) as Collection[]);
-      setLoading(false);
-    })();
-    return () => { active = false; };
-  }, [cid]);
+    activeRef.current = true;
+    load();
+    const timer = setInterval(() => load(true), 30000); // keep the dashboard live
+    // Refresh the moment the customer comes back to the tab/window, so the
+    // charts reflect any payment an agent just recorded without waiting 30s.
+    const onFocus = () => { if (document.visibilityState !== 'hidden') load(true); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    return () => {
+      activeRef.current = false;
+      clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+    };
+  }, [load]);
 
   if (loading) {
     return (
@@ -69,11 +82,29 @@ export default function CustomerDashboard({ onNavigate }: { onNavigate: (id: str
     );
   }
 
+  // Live outstanding per loan = remaining balance across its schedule rows
+  // (falls back to the stored loan balance if no schedule exists yet).
+  const outstandingByLoan = new Map<string, number>();
+  for (const s of schedule) {
+    outstandingByLoan.set(s.loan_id, (outstandingByLoan.get(s.loan_id) ?? 0) + Number(s.balance || 0));
+  }
+  const loanOutstanding = (l: Loan) =>
+    outstandingByLoan.has(l.id)
+      ? Math.round(outstandingByLoan.get(l.id)! * 100) / 100
+      : Number(l.outstanding_balance);
+
   const activeLoans = loans.filter((l) => l.status === 'active' || l.status === 'overdue');
-  const totalOutstanding = loans.reduce((s, l) => s + Number(l.outstanding_balance), 0);
+  const totalOutstanding = loans.reduce((s, l) => s + loanOutstanding(l), 0);
   const totalPaid = collections.reduce((s, c) => s + Number(c.collection_amount), 0);
   const upcoming = schedule.filter((s) => s.status === 'pending' || s.status === 'partial' || s.status === 'overdue');
   const nextDue = upcoming[0];
+
+  const statusCounts = {
+    paid: schedule.filter((s) => s.status === 'paid').length,
+    partial: schedule.filter((s) => s.status === 'partial').length,
+    pending: schedule.filter((s) => s.status === 'pending').length,
+    overdue: schedule.filter((s) => s.status === 'overdue').length,
+  };
 
   const hour = new Date().getHours();
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
@@ -84,6 +115,15 @@ export default function CustomerDashboard({ onNavigate }: { onNavigate: (id: str
       {/* Banner */}
       <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-brand-600 via-brand-700 to-ink-800 text-white p-6 sm:p-8">
         <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full -translate-y-1/2 translate-x-1/4" />
+        <button
+          onClick={() => load(true)}
+          disabled={refreshing}
+          title="Refresh"
+          className="absolute top-4 right-4 z-10 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/15 hover:bg-white/25 text-white text-xs font-semibold transition-colors backdrop-blur-sm"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+          <span className="hidden sm:inline">Refresh</span>
+        </button>
         <div className="relative">
           <p className="text-brand-200 text-xs font-semibold uppercase tracking-wider mb-1">
             {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
@@ -120,6 +160,40 @@ export default function CustomerDashboard({ onNavigate }: { onNavigate: (id: str
         <StatCard label="Total Paid" value={formatCurrency(totalPaid)} icon={CheckCircle2} tone="green" sublabel="Across all loans" />
       </div>
 
+      {/* 3D breakdown pies */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <ChartCard title="Repayment Progress" subtitle="Paid vs balance to repay">
+          {totalPaid + totalOutstanding > 0 ? (
+            <Pie3DChart
+              data={[
+                { label: 'Paid', value: Math.round(totalPaid), color: '#10b981' },
+                { label: 'Balance', value: Math.round(totalOutstanding), color: '#a87615' },
+              ]}
+              centerLabel={`${Math.round((totalPaid / (totalPaid + totalOutstanding)) * 100)}%`}
+              formatValue={(v) => formatCurrency(v)}
+            />
+          ) : (
+            <p className="text-sm text-ink-400 text-center py-10">No repayment data yet.</p>
+          )}
+        </ChartCard>
+
+        <ChartCard title="Installment Status" subtitle="Across your schedule">
+          {schedule.length > 0 ? (
+            <Pie3DChart
+              data={[
+                { label: 'Paid', value: statusCounts.paid, color: '#10b981' },
+                { label: 'Partial', value: statusCounts.partial, color: '#0ea5e9' },
+                { label: 'Pending', value: statusCounts.pending, color: '#f59e0b' },
+                { label: 'Overdue', value: statusCounts.overdue, color: '#ef4444' },
+              ]}
+              centerLabel={String(schedule.length)}
+            />
+          ) : (
+            <p className="text-sm text-ink-400 text-center py-10">No installments yet.</p>
+          )}
+        </ChartCard>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         {/* My Loans */}
         <div className="card p-6">
@@ -141,7 +215,7 @@ export default function CustomerDashboard({ onNavigate }: { onNavigate: (id: str
                   <p className="text-xs text-ink-400">{formatCurrency(l.loan_amount)} • EMI {formatCurrency(l.emi)}</p>
                 </div>
                 <div className="text-right shrink-0">
-                  <p className="text-sm font-bold text-ink-900">{formatCurrency(l.outstanding_balance)}</p>
+                  <p className="text-sm font-bold text-ink-900">{formatCurrency(loanOutstanding(l))}</p>
                   <StatusBadge status={l.status} />
                 </div>
               </div>

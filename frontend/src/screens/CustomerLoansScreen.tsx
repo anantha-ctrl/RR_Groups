@@ -4,6 +4,7 @@ import { supabase } from '../supabaseClient';
 import { useAuth } from '../auth';
 import { PageHeader, StatusBadge, EmptyState, Modal, Badge } from '../components/ui';
 import { formatCurrency, formatDate } from '../calc';
+import { exportData, type ExportColumn } from '../export';
 import type { Loan, RepaymentSchedule } from '../types';
 
 export default function CustomerLoansScreen() {
@@ -105,9 +106,14 @@ export default function CustomerLoansScreen() {
             <Badge color={viewing.status === 'active' ? 'green' : viewing.status === 'overdue' ? 'red' : viewing.status === 'pending' ? 'yellow' : 'gray'}>
               {viewing.status}
             </Badge>
-            <button className="btn-ghost !py-1.5 ml-auto" onClick={() => downloadSchedule(viewing, schedule)}>
-              <Download className="w-4 h-4" /> Download CSV
-            </button>
+            <div className="flex items-center gap-2 ml-auto">
+              <button className="btn-ghost !py-1.5" onClick={() => downloadSchedule(viewing, schedule, 'csv')}>
+                <Download className="w-4 h-4" /> CSV
+              </button>
+              <button className="btn-ghost !py-1.5" onClick={() => downloadSchedule(viewing, schedule, 'pdf')}>
+                <FileText className="w-4 h-4" /> PDF
+              </button>
+            </div>
           </div>
           <div className="overflow-x-auto max-h-80 rounded-xl border border-ink-100">
             <table className="w-full text-sm">
@@ -140,15 +146,20 @@ export default function CustomerLoansScreen() {
   );
 }
 
-function downloadSchedule(loan: Loan, rows: RepaymentSchedule[]) {
-  const header = ['Installment No', 'Due Date', 'EMI Amount', 'Paid Amount', 'Balance', 'Status'];
-  const body = rows.map((r) => [r.installment_no, r.due_date, r.emi_amount, r.paid_amount, r.balance, r.status]);
-  const csv = [header, ...body].map((row) => row.join(',')).join('\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `loan_${loan.loan_number}_schedule.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
+const SCHEDULE_COLUMNS: ExportColumn<RepaymentSchedule>[] = [
+  { header: 'Installment No', value: (r) => r.installment_no },
+  { header: 'Due Date', value: (r) => formatDate(r.due_date) },
+  { header: 'EMI Amount', value: (r) => r.emi_amount },
+  { header: 'Paid Amount', value: (r) => r.paid_amount },
+  { header: 'Balance', value: (r) => r.balance },
+  { header: 'Status', value: (r) => r.status },
+];
+
+function downloadSchedule(loan: Loan, rows: RepaymentSchedule[], format: 'csv' | 'pdf') {
+  void exportData(format, {
+    filename: `loan_${loan.loan_number}_schedule`,
+    title: `Loan ${loan.loan_number} — Repayment Schedule`,
+    columns: SCHEDULE_COLUMNS,
+    rows,
+  });
 }

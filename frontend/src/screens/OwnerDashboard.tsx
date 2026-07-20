@@ -23,7 +23,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '../supabaseClient';
 import { useAuth } from '../auth';
-import { StatCard, ChartCard, TrendChart, DonutChart } from '../components/charts';
+import { StatCard, ChartCard, TrendChart, Pie3DChart } from '../components/charts';
 import { formatCurrency, formatDate } from '../calc';
 import type { Loan, Customer, Collection, Profile } from '../types';
 
@@ -180,9 +180,18 @@ export function AdminDashboard({ onNavigate }: { onNavigate: (id: string) => voi
 
   useEffect(() => {
     loadData();
-    // Keep the dashboard live — refresh figures every 60s.
-    const timer = setInterval(() => loadData(true), 60000);
-    return () => clearInterval(timer);
+    // Keep the dashboard live — refresh figures every 30s.
+    const timer = setInterval(() => loadData(true), 30000);
+    // ...and the instant the admin returns to the tab, so charts reflect any
+    // payment/loan just recorded elsewhere without waiting for the interval.
+    const onFocus = () => { if (document.visibilityState !== 'hidden') loadData(true); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+    };
   }, [loadData]);
 
   if (loading || !data) {
@@ -344,7 +353,15 @@ export function AdminDashboard({ onNavigate }: { onNavigate: (id: string) => voi
           <TrendChart data={data.trendData} color="#a87615" />
         </ChartCard>
         <ChartCard title="Loan Status" subtitle="Active vs Overdue vs Pending">
-          <DonutChart data={data.loanStatusData} size={170} />
+          {data.loanStatusData.some((d) => d.value > 0) ? (
+            <Pie3DChart
+              data={data.loanStatusData}
+              size={180}
+              centerLabel={String(data.loanStatusData.reduce((s, d) => s + d.value, 0))}
+            />
+          ) : (
+            <p className="text-sm text-ink-400 text-center py-10">No loans yet.</p>
+          )}
         </ChartCard>
       </div>
 

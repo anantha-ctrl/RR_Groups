@@ -73,19 +73,9 @@ export default function FundsScreen() {
           .order('created_at', { ascending: false });
         rows = (data ?? []) as Fund[];
       }
-    } else if (isAgent) {
-      // Agents see funds belonging to their assigned customers.
-      const { data: myCusts } = await supabase
-        .from('customers').select('id').eq('assigned_agent', profile?.id ?? '');
-      const ids = (myCusts ?? []).map((c: { id: string }) => c.id);
-      if (ids.length) {
-        const { data } = await supabase
-          .from('funds').select('*')
-          .in('customer_id', ids)
-          .order('created_at', { ascending: false });
-        rows = (data ?? []) as Fund[];
-      }
     } else {
+      // Admin AND agents see all funds — agents need visibility to go collect
+      // (admin manages; agents can only record collections, enforced by the API).
       const { data } = await supabase
         .from('funds').select('*').order('created_at', { ascending: false });
       rows = (data ?? []) as Fund[];
@@ -184,7 +174,7 @@ export default function FundsScreen() {
             title="No funds yet"
             description={
               isAdmin ? 'Add a fund for a customer to get started.'
-                : isAgent ? 'No funds for your assigned customers yet.'
+                : isAgent ? 'No funds have been created yet. The admin sets these up.'
                 : 'Your funds will appear here once the admin sets one up for you.'
             }
           />

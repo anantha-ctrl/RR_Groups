@@ -14,6 +14,7 @@ import {
   Phone,
 } from 'lucide-react';
 import { supabase } from '../supabaseClient';
+import { useAuth } from '../auth';
 import type { ChitGroup, ChitMember, Customer } from '../types';
 import { formatCurrency, formatDate } from '../calc';
 import {
@@ -45,6 +46,8 @@ const emptyForm = {
 };
 
 export default function ChitGroupsScreen({ onNavigate }: { onNavigate: (id: string) => void }) {
+  const { profile } = useAuth();
+  const isAdmin = profile?.role === 'admin';
   const [groups, setGroups] = useState<ChitGroup[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
@@ -66,17 +69,29 @@ export default function ChitGroupsScreen({ onNavigate }: { onNavigate: (id: stri
   const [deleteTarget, setDeleteTarget] = useState<ChitGroup | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
+  const [collectingId, setCollectingId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchGroups();
     fetchCustomers();
+    // Keep the list live so collections by agents show up here in real time.
+    const timer = setInterval(() => fetchGroups(true), 30000);
+    const onFocus = () => { if (document.visibilityState !== 'hidden') fetchGroups(true); };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function fetchGroups() {
-    setLoading(true);
+  async function fetchGroups(silent = false) {
+    if (!silent) setLoading(true);
     const { data } = await supabase.from('chit_groups').select('*').order('created_at', { ascending: false });
     setGroups((data as ChitGroup[]) ?? []);
-    setLoading(false);
+    if (!silent) setLoading(false);
   }
 
   async function fetchCustomers() {
@@ -215,6 +230,36 @@ export default function ChitGroupsScreen({ onNavigate }: { onNavigate: (id: stri
     fetchMembers(dashboardGroup.id);
   }
 
+  // Record one monthly contribution from a member: mark them paid, add the
+  // money to the group's collected total, shrink the pending amount, advance the
+  // member's due date to next month, and close the group once it's fully funded.
+  async function collectFromMember(m: ChitMember) {
+    if (!dashboardGroup) return;
+    setCollectingId(m.id);
+    const amt = Number(m.contribution_amount) || 0;
+    const newCollected = Math.round(((dashboardGroup.collected_amount ?? 0) + amt) * 100) / 100;
+    const newPending = Math.max(0, Math.round(((dashboardGroup.group_value ?? 0) - newCollected) * 100) / 100);
+    const newStatus: ChitGroup['status'] = newCollected >= dashboardGroup.group_value ? 'closed' : 'active';
+
+    // Next month's due date for this member.
+    const base = m.due_date ? new Date(m.due_date) : new Date();
+    const nextDue = new Date(base.getFullYear(), base.getMonth() + 1, base.getDate())
+      .toISOString()
+      .slice(0, 10);
+
+    await supabase.from('chit_members').update({ payment_status: 'paid', due_date: nextDue }).eq('id', m.id);
+    await supabase
+      .from('chit_groups')
+      .update({ collected_amount: newCollected, pending_amount: newPending, status: newStatus })
+      .eq('id', dashboardGroup.id);
+
+    // Reflect immediately in the open dashboard + the card list.
+    setDashboardGroup({ ...dashboardGroup, collected_amount: newCollected, pending_amount: newPending, status: newStatus });
+    setCollectingId(null);
+    fetchMembers(dashboardGroup.id);
+    fetchGroups();
+  }
+
   const memberLookup = useMemo(() => {
     const map = new Map<string, Customer>();
     customers.forEach((c) => map.set(c.id, c));
@@ -225,11 +270,13 @@ export default function ChitGroupsScreen({ onNavigate }: { onNavigate: (id: stri
     <div className="animate-fade-in">
       <PageHeader
         title="Chit Groups"
-        subtitle="Manage chit fund groups and member contributions"
+        subtitle={isAdmin ? 'Manage chit fund groups and member contributions' : 'View chit groups and collect member contributions'}
         actions={
-          <button className="btn-primary" onClick={openCreate}>
-            <Plus className="w-4 h-4" /> Create Group
-          </button>
+          isAdmin ? (
+            <button className="btn-primary" onClick={openCreate}>
+              <Plus className="w-4 h-4" /> Create Group
+            </button>
+          ) : undefined
         }
       />
 
@@ -270,7 +317,7 @@ export default function ChitGroupsScreen({ onNavigate }: { onNavigate: (id: stri
             title={groups.length === 0 ? 'No chit groups yet' : 'No groups match your filters'}
             description={groups.length === 0 ? 'Create your first chit fund group to get started.' : 'Try adjusting your search or status filter.'}
             action={
-              groups.length === 0 ? (
+              groups.length === 0 && isAdmin ? (
                 <button className="btn-primary" onClick={openCreate}>
                   <Plus className="w-4 h-4" /> Create Group
                 </button>
@@ -284,6 +331,7 @@ export default function ChitGroupsScreen({ onNavigate }: { onNavigate: (id: stri
             <GroupCard
               key={g.id}
               group={g}
+              isAdmin={isAdmin}
               onView={() => openDashboard(g)}
               onEdit={() => openEdit(g)}
               onDelete={() => setDeleteTarget(g)}
@@ -405,9 +453,11 @@ export default function ChitGroupsScreen({ onNavigate }: { onNavigate: (id: stri
             <div>
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-ink-800">Member Collection Tracking</h3>
-                <button className="btn-ghost text-violet-600" onClick={openAddMember}>
-                  <UserPlus className="w-4 h-4" /> Add Member
-                </button>
+                {isAdmin && (
+                  <button className="btn-ghost text-violet-600" onClick={openAddMember}>
+                    <UserPlus className="w-4 h-4" /> Add Member
+                  </button>
+                )}
               </div>
 
               {membersLoading ? (
@@ -444,19 +494,35 @@ export default function ChitGroupsScreen({ onNavigate }: { onNavigate: (id: stri
                             <td className="table-cell">{formatCurrency(m.contribution_amount)}</td>
                             <td className="table-cell">{formatDate(m.due_date)}</td>
                             <td className="table-cell"><StatusBadge status={m.payment_status} /></td>
-                            <td className="table-cell text-right">
-                              <button
-                                className="btn-ghost text-rose-500 px-2"
-                                onClick={() => removeMember(m.id)}
-                                disabled={removingId === m.id}
-                                title="Remove member"
-                              >
-                                {removingId === m.id ? (
-                                  <Loader2 className="w-4 h-4 animate-spin" />
-                                ) : (
-                                  <UserMinus className="w-4 h-4" />
+                            <td className="table-cell">
+                              <div className="flex items-center justify-end gap-1">
+                                <button
+                                  className="btn-ghost text-emerald-600 px-2"
+                                  onClick={() => collectFromMember(m)}
+                                  disabled={collectingId === m.id}
+                                  title={`Collect ${formatCurrency(m.contribution_amount)}`}
+                                >
+                                  {collectingId === m.id ? (
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                  ) : (
+                                    <><IndianRupee className="w-4 h-4" /> Collect</>
+                                  )}
+                                </button>
+                                {isAdmin && (
+                                  <button
+                                    className="btn-ghost text-rose-500 px-2"
+                                    onClick={() => removeMember(m.id)}
+                                    disabled={removingId === m.id}
+                                    title="Remove member"
+                                  >
+                                    {removingId === m.id ? (
+                                      <Loader2 className="w-4 h-4 animate-spin" />
+                                    ) : (
+                                      <UserMinus className="w-4 h-4" />
+                                    )}
+                                  </button>
                                 )}
-                              </button>
+                              </div>
                             </td>
                           </tr>
                         );
@@ -561,12 +627,14 @@ function MiniStat({ label, value }: { label: string; value: string }) {
 
 function GroupCard({
   group,
+  isAdmin,
   onView,
   onEdit,
   onDelete,
   onNavigate,
 }: {
   group: ChitGroup;
+  isAdmin: boolean;
   onView: () => void;
   onEdit: () => void;
   onDelete: () => void;
@@ -625,8 +693,12 @@ function GroupCard({
 
       <div className="flex items-center gap-2 pt-1 border-t border-ink-50 mt-1">
         <button className="btn-primary flex-1 justify-center" onClick={onView}>View Dashboard</button>
-        <button className="btn-ghost px-2.5" onClick={onEdit} title="Edit"><Edit className="w-4 h-4" /></button>
-        <button className="btn-ghost text-rose-500 px-2.5" onClick={onDelete} title="Delete"><Trash2 className="w-4 h-4" /></button>
+        {isAdmin && (
+          <>
+            <button className="btn-ghost px-2.5" onClick={onEdit} title="Edit"><Edit className="w-4 h-4" /></button>
+            <button className="btn-ghost text-rose-500 px-2.5" onClick={onDelete} title="Delete"><Trash2 className="w-4 h-4" /></button>
+          </>
+        )}
       </div>
     </div>
   );

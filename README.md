@@ -17,16 +17,38 @@ whole journey — customer onboarding, loan origination, EMI/repayment schedules
 collections with digital receipts, chit-fund groups, overdue tracking, and reporting —
 across three roles: **Admin**, **Agent**, and **Customer**.
 
-```
-frontend (Vite + React, :5173)
-        │  fetch + JWT (Bearer)
-        ▼
-backend/ (PHP 8, Apache :80)  ──►  MySQL 8  (database: rrgroups)
+```mermaid
+flowchart TD
+    subgraph Client["🖥️  Frontend — Vite + React + TypeScript  (:5173)"]
+        direction TB
+        UI["Role-based UI<br/>Admin · Agent · Customer"]
+        Shim["supabaseClient.ts<br/>Supabase-compatible shim"]
+        UI --> Shim
+    end
+
+    subgraph Server["⚙️  Backend — PHP 8, framework-free MVC  (Apache :80)"]
+        direction TB
+        Entry["Entry points<br/>auth.php · rest.php · customers.php · users.php"]
+        Core["core/ · controllers/ · models/"]
+        Entry --> Core
+    end
+
+    DB[("🗄️  MySQL 8<br/>database: rrgroups")]
+
+    Shim -- "fetch + JWT (Bearer)" --> Entry
+    Core -- "PDO" --> DB
+
+    Ext["✉️  SMTP mailer · 📱 SMS gateway<br/>🗺️ OpenStreetMap / Nominatim (maps + geocoding)"]
+    Core -.-> Ext
+    Shim -.-> Ext
 ```
 
 The backend is a small, framework-free PHP API served by XAMPP's Apache, talking to a
 standalone **MySQL 8** server. The frontend calls it through a Supabase-compatible client
 shim, so screens use a familiar `supabase.from('table')…` API with zero direct URL wiring.
+Every list view is **real-time** — 30-second polling plus an instant refresh whenever the
+tab regains focus — so a payment recorded by an agent shows up on the admin and customer
+screens within seconds.
 
 ---
 
@@ -38,14 +60,17 @@ shim, so screens use a familiar `supabase.from('table')…` API with zero direct
 | **Customers** | KYC onboarding (Aadhaar, PAN, occupation, photo), agent assignment, optional linked login. Export to PDF / Excel / CSV. |
 | **Loans** | Monthly / weekly / daily plans with automatic EMI, interest & processing-fee calculation. |
 | **Repayment schedules** | Auto-generated installment plans with real-time paid / partial / overdue status. |
-| **Collections** | Field receipts with photo proof and borrower signature; agent-scoped views. |
-| **Chit funds** | End-to-end chit groups — members, monthly contributions, payout tracking. |
+| **Collections** | Field receipts with company letterhead, photo proof and borrower signature; agent-scoped views. Each payment **auto-updates the repayment schedule** and the loan's outstanding balance. |
+| **Funds (recurring savings)** | Weekly deposit funds with a **passbook** (per-payment ledger), maturity + bonus math, due-date tracking, and **early full settlement**. |
+| **Chit funds** | End-to-end chit groups — members, monthly contributions, live collection progress, agent **collect** action, and a customer **My Chits** view. |
+| **Cash handover** | Agents reconcile daily cash vs UPI; any shortfall carries forward as **pending** to the next day. |
+| **Field & Route maps** | Real **Leaflet + OpenStreetMap** maps — admin **Field Map** (who collected where) and agent **Route Map** (turn-by-turn navigation). Addresses **auto-geocode** to lat/lng as you type. |
 | **Overdue** | Tracking and recovery of overdue accounts. |
-| **Reports & analytics** | Daily / monthly / agent-performance reports, real PDF & Excel export. |
+| **Reports & analytics** | Daily / monthly / agent-performance reports, dependency-free **3D pie / trend charts**, real PDF & Excel export. |
 | **Notifications** | Per-user notifications with a live unread badge; admins can broadcast to customers. |
 | **Profile** | Self-service profile editing (contact, KYC, avatar) + secure email/password change. |
 | **Auth** | JWT login, bcrypt passwords, and a 2-step **OTP password reset** (email + SMS, with demo fallback). |
-| **Settings** | Company branding (name, logo), interest config, SMS/WhatsApp toggles — logo reflected app-wide in real time. |
+| **Settings** | Company branding (name, logo, address, GST), interest config, SMS/WhatsApp toggles — reflected app-wide (incl. receipts) in real time. |
 
 ---
 
@@ -75,22 +100,158 @@ RRGroups/
 │   ├── users.php            admin-only user management
 │   ├── customers.php        customer create/update (+ optional linked login)
 │   ├── core/                Database, Jwt, Model, QueryParser, Controller, Mailer, Sms
-│   ├── controllers/         AuthController, ResourceController, UserController, CustomerController
-│   ├── models/              Profile, Customer, Loan, Collection, ChitGroup, …
+│   ├── controllers/         AuthController, ResourceController, UserController,
+│   │                        CustomerController, FundController, FundPaymentController,
+│   │                        HandoverController
+│   ├── models/              Profile, Customer, Loan, Collection, ChitGroup, ChitMember,
+│   │                        Fund, FundPayment, Handover, …
 │   ├── schema.sql           database + tables + seed accounts
 │   ├── migrate.php          idempotent migrations
+│   ├── backfill_*.php       one-time reconcilers (schedule paid, fund passbook)
 │   └── seed.php             demo passwords + sample data
 │
 └── frontend/                Vite + React app (:5173)
     ├── src/
     │   ├── App.tsx          routing shell (role-based)
     │   ├── auth.tsx         AuthProvider (JWT session, profile, refresh)
-    │   ├── company.tsx      CompanyProvider (live company name/logo)
+    │   ├── company.tsx      CompanyProvider (live company name/logo/address/GST)
     │   ├── supabaseClient.ts Supabase-compatible shim over the PHP API
+    │   ├── schedule.ts      waterfall sync: collections → repayment_schedule + loan
+    │   ├── geocode.ts       address → lat/lng via Nominatim (OpenStreetMap)
+    │   ├── calc.ts          EMI / interest / daily-plan math, date & currency format
     │   ├── hooks.ts         useNotifications (live badge), useAgents
-    │   ├── screens/         one file per page (dashboards, customers, loans, …)
-    │   └── components/      Layout, ui, charts
+    │   ├── screens/         one file per page (dashboards, customers, loans, funds,
+    │   │                    chits, handovers, field-map, route-map, …)
+    │   └── components/      Layout, ui, charts (3D pie / trend), RouteMap (Leaflet)
     └── tailwind.config.js   brand (gold) + ink (navy) palette
+```
+
+---
+
+## Architecture & data flows
+
+### Database (entity relationships)
+
+```mermaid
+erDiagram
+    profiles     ||--o{ customers          : "assigned agent"
+    profiles     ||--o{ collections        : records
+    profiles     ||--o{ handovers          : "hands over"
+    customers    ||--o{ loans              : has
+    customers    ||--o{ funds              : owns
+    customers    ||--o{ chit_members       : "joins as"
+    customers    ||--o| profiles           : "linked login"
+    loans        ||--o{ repayment_schedule : generates
+    loans        ||--o{ collections        : "paid via"
+    funds        ||--o{ fund_payments      : "passbook"
+    chit_groups  ||--o{ chit_members       : contains
+
+    customers {
+        uuid id
+        string full_name
+        string mobile
+        decimal latitude
+        decimal longitude
+        uuid assigned_agent
+    }
+    loans {
+        uuid id
+        string loan_number
+        decimal loan_amount
+        decimal outstanding_balance
+        string status
+    }
+    repayment_schedule {
+        int installment_no
+        decimal emi_amount
+        decimal paid_amount
+        decimal balance
+        string status
+    }
+    collections {
+        string receipt_number
+        decimal collection_amount
+        string payment_method
+        date collection_date
+    }
+    funds {
+        string fund_number
+        decimal weekly_amount
+        decimal collected_amount
+        string status
+    }
+    chit_groups {
+        string group_number
+        decimal group_value
+        decimal collected_amount
+        decimal pending_amount
+    }
+```
+
+### Role-based navigation
+
+```mermaid
+flowchart TD
+    Login["🔑 Login (JWT)"] --> Role{Role?}
+
+    Role -->|Admin| Admin["🛡️ Admin"]
+    Role -->|Agent| Agent["🧑‍💼 Agent"]
+    Role -->|Customer| Cust["👤 Customer"]
+
+    Admin --> A1["Dashboard · 3D charts"]
+    Admin --> A2["Customers · Agents · Loans"]
+    Admin --> A3["Collections · Overdue"]
+    Admin --> A4["Chit Groups · Funds · Handovers"]
+    Admin --> A5["Field Map · Reports · Settings"]
+
+    Agent --> G1["Dashboard"]
+    Agent --> G2["Assigned Customers · Loans"]
+    Agent --> G3["Collections (receipts)"]
+    Agent --> G4["Chit Groups (collect) · Funds"]
+    Agent --> G5["Cash Handover · Route Map"]
+
+    Cust --> C1["Dashboard · 3D pies"]
+    Cust --> C2["My Loans · Repayment Schedule"]
+    Cust --> C3["Payment History"]
+    Cust --> C4["My Funds · My Chits"]
+```
+
+### Real-time collection → schedule sync
+
+When an agent or admin records a payment, the app rebuilds the loan's schedule and
+outstanding balance from the **actual collections** (an idempotent earliest-first
+waterfall), so the customer's screens reflect it within seconds.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Agent
+    participant FE as Frontend
+    participant API as PHP API
+    participant DB as MySQL
+    participant Cust as Customer view
+
+    Agent->>FE: Collect ₹ payment
+    FE->>API: insert collections
+    API->>DB: INSERT collection
+    FE->>API: syncScheduleFromCollections(loan)
+    API->>DB: UPDATE repayment_schedule (paid / balance / status)
+    API->>DB: UPDATE loans.outstanding_balance (+ close if 0)
+    Note over Cust: 30s poll / tab-focus refresh
+    Cust->>API: reload loans + schedule + collections
+    API-->>Cust: fresh figures → 3D pies + progress update
+```
+
+### Chit-fund lifecycle
+
+```mermaid
+flowchart LR
+    Create["Admin: Create Group<br/>value · members · monthly"] --> AddM["Admin: Add Members"]
+    AddM --> Collect["Agent / Admin: ₹ Collect<br/>(monthly contribution)"]
+    Collect --> Upd["collected ↑ · pending ↓<br/>member → Paid · next due +1 month"]
+    Upd -->|collected ≥ value| Closed["Group Closed"]
+    Upd -->|ongoing| Collect
+    Upd --> CustView["Customer: My Chits<br/>(live progress + status)"]
 ```
 
 ---
@@ -212,9 +373,10 @@ A summary of everything built so far, grouped by milestone (most foundational fi
 - Replaced the original **Supabase** backend with a **self-hosted PHP + MySQL** API — the
   frontend was kept unchanged via a **Supabase-compatible client shim**
   (`supabase.from('table')…` over PostgREST-lite query params), so no screen URLs changed.
-- Designed the **MySQL 8 schema** (10 tables: profiles, customers, loans,
-  repayment_schedule, collections, chit_groups, chit_members, notifications, settings,
-  push_subscriptions) plus a limited `rrgroups_app` user so the app never runs as `root`.
+- Designed the **MySQL 8 schema** (now 13 tables: profiles, customers, loans,
+  repayment_schedule, collections, chit_groups, chit_members, funds, fund_payments,
+  handovers, notifications, settings, push_subscriptions) plus a limited `rrgroups_app`
+  user so the app never runs as `root`.
 - **JWT (HS256)** authentication with **bcrypt** password hashing.
 - Refactored the backend into a clean, framework-free **MVC** (`core/`, `models/`,
   `controllers/` + thin entry-point scripts).
@@ -273,6 +435,36 @@ A summary of everything built so far, grouped by milestone (most foundational fi
 
 ### 9 · Documentation & brand
 - Produced an interactive **color-palette** reference and this README.
+
+### 10 · Funds (recurring savings) & passbook
+- Built **weekly deposit funds** with a per-payment **passbook** ledger (`funds` +
+  `fund_payments` tables), remaining-week due dates, maturity + **bonus** math, and
+  **early full settlement**. Added `backfill_fund_payments.php` to reconstruct passbook
+  entries for funds collected before the ledger existed.
+
+### 11 · Real-time collections & repayment schedule
+- Every collection now runs `syncScheduleFromCollections()` — an **idempotent, earliest-first
+  waterfall** that recomputes each installment's paid / balance / status **and** the loan's
+  `outstanding_balance` (auto-closing when cleared). Added `backfill_schedule_paid.php` for
+  historical payments.
+- Made customer **Dashboard, Repayment Schedule and Payment History** live (30s polling +
+  tab-focus refresh + manual refresh).
+
+### 12 · Field operations — cash handover & maps
+- **Cash handover:** agents reconcile daily **cash vs UPI**; shortfalls carry forward as
+  **pending** (`handovers` table).
+- **Maps:** real **Leaflet + OpenStreetMap** — admin **Field Map** (who collected where, with
+  agent filter) and agent **Route Map** (navigation, call, GPS). Customer locations
+  **auto-geocode** from a typed address via Nominatim (`customers.latitude/longitude`), with
+  marker de-overlap for shared coordinates.
+
+### 13 · Analytics, chit reach & mobile polish
+- Added dependency-free **3D pie charts** and responsive trend charts; fixed the broken
+  100%-single-slice donut and mobile chart alignment.
+- Extended **chit funds** end-to-end: a per-member **Collect** action (updates progress,
+  status and next due), agent access to Chit Groups, and a customer **My Chits** view.
+- Company **receipts** gained a branding letterhead (name, logo, address, GST) and
+  print-alignment fixes.
 
 ---
 

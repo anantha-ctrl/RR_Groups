@@ -9,6 +9,7 @@ export interface MapStop {
   lng: number;
   paid: boolean;
   amount?: string;
+  subtitle?: string; // e.g. "Collected by Arjun · ₹5,500 · 3:58 PM"
 }
 
 // Colored numbered pin (divIcon → no external marker image assets needed).
@@ -91,15 +92,13 @@ export function RouteMap({ stops, me }: { stops: MapStop[]; me: { lat: number; l
       const color = s.paid ? '#10b981' : '#f43f5e';
       L.marker([lat, lng], { icon: pinIcon(String(i + 1), color) })
         .addTo(layer)
-        // Always-visible name label so you can see which customer is where.
-        .bindTooltip(s.name, {
-          permanent: true,
-          direction: 'top',
-          offset: [0, -30],
-          className: 'route-pin-label',
-        })
+        // Always-visible label: customer name + optional subtitle (e.g. which agent collected).
+        .bindTooltip(
+          `<div class="rpl-name">${s.name}</div>${s.subtitle ? `<div class="rpl-sub">${s.subtitle}</div>` : ''}`,
+          { permanent: true, direction: 'top', offset: [0, -30], className: 'route-pin-label' },
+        )
         .bindPopup(
-          `<b>${s.name}</b>${s.amount ? `<br/>${s.amount}` : ''}<br/>` +
+          `<b>${s.name}</b>${s.amount ? `<br/>${s.amount}` : ''}${s.subtitle ? `<br/>${s.subtitle}` : ''}<br/>` +
           // Navigation always uses the customer's real coordinates, not the fan-out offset.
           `<a href="https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}" target="_blank" rel="noopener">Navigate →</a>`,
         );

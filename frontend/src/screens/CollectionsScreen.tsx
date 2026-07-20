@@ -5,6 +5,7 @@ import { useAuth } from '../auth';
 import { useCompany } from '../company';
 import { useAgents } from '../hooks';
 import { formatCurrency, formatDate, formatDateTime } from '../calc';
+import { syncScheduleFromCollections } from '../schedule';
 import type { Collection, Customer, Loan, Profile } from '../types';
 import { PageHeader, Modal, Field, Select, TextArea, EmptyState, ConfirmDialog, Avatar } from '../components/ui';
 
@@ -270,6 +271,13 @@ export function CollectionsScreen({ onNavigate }: { onNavigate: (id: string) => 
       saved = data as Collection;
     }
 
+    // Keep the repayment schedule (Paid/Balance/Status) in sync with payments.
+    // Re-sync the old loan too, in case an edit moved the payment to a new loan.
+    const loanIds = new Set<string>();
+    if (payload.loan_id) loanIds.add(payload.loan_id);
+    if (editing?.loan_id) loanIds.add(editing.loan_id);
+    for (const id of loanIds) await syncScheduleFromCollections(id).catch(() => {});
+
     await fetchAll();
     setSaving(false);
     setModalOpen(false);
@@ -278,8 +286,10 @@ export function CollectionsScreen({ onNavigate }: { onNavigate: (id: string) => 
 
   async function confirmDelete() {
     if (!deleteTarget) return;
+    const loanId = deleteTarget.loan_id;
     const { error } = await supabase.from('collections').delete().eq('id', deleteTarget.id);
     if (error) { alert(error.message); return; }
+    if (loanId) await syncScheduleFromCollections(loanId).catch(() => {});
     await fetchAll();
   }
 
