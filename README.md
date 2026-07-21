@@ -298,16 +298,24 @@ Open **http://localhost:5173**.
 
 ---
 
-## Demo accounts
+## Login credentials
 
-| Email | Password | Role |
-|-------|----------|------|
-| `owner@fincollect.in` | `owner123` | Admin |
-| `admin@fincollect.in` | `admin123` | Admin |
-| `agent@fincollect.in` | `agent123` | Agent |
-| `customer@fincollect.in` | `customer123` | Customer |
+Sign in at **http://localhost:5173** with any of the seeded accounts below. These are
+created by `seed.php` (`php seed.php`) — one per role.
 
-The login screen also has **Quick Demo Login** buttons.
+| Role | Email | Password | Name |
+|------|-------|----------|------|
+| 🛡️ **Admin** (owner) | `owner@fincollect.in` | `owner123` | Owner Admin |
+| 🛡️ **Admin** | `admin@fincollect.in` | `admin123` | Priya Sharma |
+| 🧑‍💼 **Agent** | `agent@fincollect.in` | `agent123` | Arjun Mehta |
+| 👤 **Customer** | `customer@fincollect.in` | `customer123` | Ramesh Iyer |
+
+> The **Customer** login is linked to a customer record, so it only sees its own loans,
+> repayment schedule, funds and chits. Additional customers created in-app get their own
+> credentials set at creation time (Customers ▸ Add ▸ login fields).
+
+> 🔐 Change these default passwords before any non-local deployment — each user can update
+> their own from **My Profile**, or an admin can reset them under **User Management**.
 
 ---
 
@@ -385,7 +393,7 @@ A summary of everything built so far, grouped by milestone (most foundational fi
 - Established the **three-role system** — Admin / Agent / Customer (Owner = Admin) — with
   role-scoped navigation and dashboards; customer logins are **linked to their customer record**.
 - Removed the "Select your workspace" role-selection screen.
-- Built the **landing page** and refreshed the **login** (email-only, quick demo accounts).
+- Built the **landing page** and refreshed the **login** (email-only sign-in).
 
 ### 3 · Customers, Agents & Loans
 - **Customers:** KYC onboarding (Aadhaar, PAN, occupation, photo), agent assignment,

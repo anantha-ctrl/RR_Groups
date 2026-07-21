@@ -6,12 +6,6 @@ import {
 import { useAuth } from '../auth';
 import { apiCall } from '../supabaseClient';
 
-const DEMO_ACCOUNTS = [
-  { role: 'Admin', initial: 'A', email: 'admin@fincollect.in', password: 'admin123', tone: 'from-brand-500 to-brand-700', desc: 'Full system access & management' },
-  { role: 'Collection Agent', initial: 'A', email: 'agent@fincollect.in', password: 'agent123', tone: 'from-emerald-500 to-emerald-700', desc: 'Field collections' },
-  { role: 'Customer', initial: 'C', email: 'customer@fincollect.in', password: 'customer123', tone: 'from-cyan-500 to-cyan-700', desc: 'View my loans & payments' },
-];
-
 export function LoginScreen({ onBack }: { onBack?: () => void }) {
   const { signIn, error } = useAuth();
   const [email, setEmail] = useState('');
@@ -35,20 +29,6 @@ export function LoginScreen({ onBack }: { onBack?: () => void }) {
       await signIn(value, password, remember);
     } catch {
       // error handled by auth context
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const quickLogin = async (demoEmail: string, demoPassword: string) => {
-    setEmail(demoEmail);
-    setPassword(demoPassword);
-    setLocalError(null);
-    setLoading(true);
-    try {
-      await signIn(demoEmail, demoPassword, true);
-    } catch {
-      // noop
     } finally {
       setLoading(false);
     }
@@ -216,35 +196,6 @@ export function LoginScreen({ onBack }: { onBack?: () => void }) {
           <div className="mt-5 flex items-center gap-2 text-xs text-ink-400 bg-ink-100/60 rounded-xl px-3.5 py-2.5">
             <ShieldCheck className="w-4 h-4 text-ink-400" />
             Protected by encrypted, signed sessions with role-based access.
-          </div>
-
-          {/* Demo accounts */}
-          <div className="mt-6">
-            <div className="flex items-center gap-3 mb-3">
-              <div className="h-px flex-1 bg-ink-200" />
-              <span className="text-[11px] font-semibold text-ink-400 uppercase tracking-wide">Quick Demo Login</span>
-              <div className="h-px flex-1 bg-ink-200" />
-            </div>
-            <div className="grid grid-cols-1 gap-2">
-              {DEMO_ACCOUNTS.map((acc) => (
-                <button
-                  key={acc.email}
-                  type="button"
-                  onClick={() => quickLogin(acc.email, acc.password)}
-                  disabled={loading}
-                  className="flex items-center gap-3 p-3 rounded-xl border border-ink-200 bg-white hover:border-brand-300 hover:bg-brand-50/40 transition-all group text-left"
-                >
-                  <div className={`w-9 h-9 rounded-lg bg-gradient-to-br ${acc.tone} flex items-center justify-center text-white text-xs font-bold`}>
-                    {acc.initial}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold text-ink-800">{acc.role}</p>
-                    <p className="text-[11px] text-ink-400 truncate">{acc.email} • {acc.desc}</p>
-                  </div>
-                  <ArrowRight className="w-4 h-4 text-ink-300 group-hover:text-brand-600 group-hover:translate-x-0.5 transition-all" />
-                </button>
-              ))}
-            </div>
           </div>
 
         </div>
