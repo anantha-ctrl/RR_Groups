@@ -60,7 +60,7 @@ screens within seconds.
 | **Customers** | KYC onboarding (Aadhaar, PAN, occupation, photo), agent assignment, optional linked login. Export to PDF / Excel / CSV. |
 | **Loans** | Monthly / weekly / daily plans with automatic EMI, interest & processing-fee calculation. |
 | **Repayment schedules** | Auto-generated installment plans with real-time paid / partial / overdue status. |
-| **Collections** | Field receipts with company letterhead, photo proof and borrower signature; agent-scoped views. Each payment **auto-updates the repayment schedule** and the loan's outstanding balance. |
+| **Collections** | Field receipts with company letterhead, photo proof, borrower signature and a **scannable QR** (offline, dependency-free) that carries the receipt's key facts for verification. Each payment **auto-updates the repayment schedule** and the loan's outstanding balance. |
 | **Funds (recurring savings)** | Weekly deposit funds with a **passbook** (per-payment ledger), maturity + bonus math, due-date tracking, and **early full settlement**. |
 | **Chit funds** | End-to-end chit groups — members, monthly contributions, live collection progress, agent **collect** action, and a customer **My Chits** view. |
 | **Cash handover** | Agents reconcile daily cash vs UPI; any shortfall carries forward as **pending** to the next day. |
@@ -70,6 +70,7 @@ screens within seconds.
 | **Notifications** | Per-user notifications with a live unread badge; admins can broadcast to customers. |
 | **Profile** | Self-service profile editing (contact, KYC, avatar) + secure email/password change. |
 | **Auth** | JWT login, bcrypt passwords, and a 2-step **OTP password reset** (email + SMS, with demo fallback). |
+| **Authorization** | Every table routes through a **dedicated role-enforcing controller** — reads are open to any signed-in user (the UI scopes rows per role); writes are checked server-side, down to per-field limits (an agent may pin a customer's GPS but not rename them). |
 | **Settings** | Company branding (name, logo, address, GST), interest config, SMS/WhatsApp toggles — reflected app-wide (incl. receipts) in real time. |
 
 ---
@@ -101,8 +102,12 @@ RRGroups/
 │   ├── customers.php        customer create/update (+ optional linked login)
 │   ├── core/                Database, Jwt, Model, QueryParser, Controller, Mailer, Sms
 │   ├── controllers/         AuthController, ResourceController, UserController,
-│   │                        CustomerController, LoanController, AgentController,
-│   │                        FundController, FundPaymentController, HandoverController
+│   │                        CustomerController, CustomerRestController, LoanController,
+│   │                        AgentController, CollectionController, ScheduleController,
+│   │                        ChitGroupController, ChitMemberController, FundController,
+│   │                        FundPaymentController, HandoverController,
+│   │                        NotificationController, SettingController,
+│   │                        PushSubscriptionController
 │   ├── models/              Profile, Customer, Loan, Collection, ChitGroup, ChitMember,
 │   │                        Fund, FundPayment, Handover, …
 │   ├── schema.sql           database + tables + seed accounts
@@ -118,6 +123,7 @@ RRGroups/
     │   ├── supabaseClient.ts Supabase-compatible shim over the PHP API
     │   ├── schedule.ts      waterfall sync: collections → repayment_schedule + loan
     │   ├── geocode.ts       address → lat/lng via Nominatim (OpenStreetMap)
+    │   ├── qrcodegen.ts     dependency-free QR generator for printed receipts
     │   ├── calc.ts          EMI / interest / daily-plan math, date & currency format
     │   ├── hooks.ts         useNotifications (live badge), useAgents
     │   ├── screens/         one file per page (dashboards, customers, loans, funds,
@@ -369,6 +375,34 @@ DELETE/backend/rest.php?table=loans&id=eq.<uuid>
 Filters use `column=<op>.<value>` where `op ∈ eq, neq, gt, gte, lt, lte, like, in, is`.
 All `rest.php` requests require a valid `Authorization: Bearer <jwt>` header.
 
+### Authorization model
+
+`rest.php` dispatches each `?table=` to a **dedicated controller** (see the `$controllers`
+map in [`backend/rest.php`](backend/rest.php)) that enforces role-based writes before the
+generic CRUD runs. Reads stay open to any authenticated user; the frontend scopes the rows
+each role actually sees.
+
+| Table | Create | Update | Delete |
+|-------|--------|--------|--------|
+| `loans` | admin · agent | admin · agent | admin |
+| `collections` | admin · agent | admin · agent | admin |
+| `repayment_schedule` | admin · agent | admin · agent | admin |
+| `customers` | admin | admin · agent *(lat/lng only)* | admin |
+| `profiles` (users/agents) | admin | admin | admin |
+| `chit_groups` | admin | admin · agent *(collection fields)* | admin |
+| `chit_members` | admin | admin · agent *(status + due date)* | admin |
+| `funds` | admin | admin · agent *(collection fields)* | admin |
+| `fund_payments` | admin · agent | admin | admin |
+| `handovers` | admin · agent *(own)* | admin | admin |
+| `notifications` | admin · agent | any *(own)* | any *(own)* |
+| `settings` | admin | admin | admin |
+| `push_subscriptions` | any *(own device)* | any | any |
+
+> Full customer create/update with a linked login goes through `customers.php`
+> (`CustomerController`, which hashes the login password); user creation goes through
+> `users.php` (`UserController`); self-service profile edits through
+> `auth.php?action=update_profile`.
+
 See [`backend/README.md`](backend/README.md) for the full backend/MVC reference.
 
 ---
@@ -473,6 +507,19 @@ A summary of everything built so far, grouped by milestone (most foundational fi
   status and next due), agent access to Chit Groups, and a customer **My Chits** view.
 - Company **receipts** gained a branding letterhead (name, logo, address, GST) and
   print-alignment fixes.
+
+### 14 · API hardening & verifiable receipts
+- Gave **every whitelisted table its own role-enforcing controller** (Loan, Agent,
+  Customer, Collection, Schedule, ChitGroup, ChitMember, Notification, Setting,
+  PushSubscription), replacing the single open generic controller. Writes are now checked
+  server-side — including **per-field limits** (agents pin a customer's GPS or record a
+  chit/fund collection, but can't rename customers, delete loans, or change settings). See
+  the [authorization matrix](#authorization-model).
+- Loans get a **server-side loan-number fallback** so one can never be created without one.
+- Added a **real, scannable QR** to printed receipts — a compact, dependency-free,
+  offline QR generator (`qrcodegen.ts`) encoding the receipt no., amount, payer, loan and
+  agent for verification (replacing the old placeholder).
+- Removed the **Quick Demo Login** buttons; documented the seeded [login credentials](#login-credentials) instead.
 
 ---
 
