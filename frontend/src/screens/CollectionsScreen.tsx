@@ -6,6 +6,7 @@ import { useCompany } from '../company';
 import { useAgents } from '../hooks';
 import { formatCurrency, formatDate, formatDateTime } from '../calc';
 import { syncScheduleFromCollections } from '../schedule';
+import { qrDataUri } from '../qrcodegen';
 import type { Collection, Customer, Loan, Profile } from '../types';
 import { PageHeader, Modal, Field, Select, TextArea, EmptyState, ConfirmDialog, Avatar } from '../components/ui';
 
@@ -106,6 +107,24 @@ function Row({ k, v }: { k: string; v: string }) {
   );
 }
 
+// Encode the receipt's key facts into the QR so a scan reveals a verifiable
+// summary (receipt no., amount, payer, loan, agent, date) even offline. If the
+// app is served over http(s), we prefix a portal link carrying the receipt no.
+function buildReceiptQr(c: Collection, companyName: string): string {
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const link = origin ? `${origin}/?receipt=${encodeURIComponent(c.receipt_number)}\n` : '';
+  const payload =
+    `${link}${companyName} — Payment Receipt\n` +
+    `Receipt: ${c.receipt_number}\n` +
+    `Amount: INR ${Number(c.collection_amount)}\n` +
+    `Customer: ${c.customer_name ?? '-'}\n` +
+    `Loan: ${c.loan_number ?? '-'}\n` +
+    `Method: ${c.payment_method}\n` +
+    `Agent: ${c.agent_name ?? '-'}\n` +
+    `Date: ${c.collection_date}`;
+  return qrDataUri(payload);
+}
+
 function ReceiptCard({ collection }: { collection: Collection }) {
   const company = useCompany();
   const meta = [company.contact && `Ph: ${company.contact}`, company.gst && `GST: ${company.gst}`]
@@ -141,10 +160,12 @@ function ReceiptCard({ collection }: { collection: Collection }) {
       </div>
       <div className="flex items-center justify-between py-4">
         <div className="flex items-start gap-3">
-          <div className="w-20 h-20 rounded-lg border-2 border-ink-300 bg-[repeating-conic-gradient(ink-200_0_25%,transparent_0_50%)] bg-[length:10px_10px] flex items-center justify-center">
-            <span className="text-[8px] text-ink-400 font-semibold bg-white px-1">QR</span>
-          </div>
-          <p className="text-[10px] text-ink-400 leading-tight max-w-[120px] pt-1">Scan to verify this receipt on the RR Groups portal.</p>
+          <img
+            src={buildReceiptQr(collection, company.name)}
+            alt="Receipt verification QR code"
+            className="w-20 h-20 rounded-lg border border-ink-200 bg-white p-0.5"
+          />
+          <p className="text-[10px] text-ink-400 leading-tight max-w-[120px] pt-1">Scan to verify this receipt — it carries the receipt no., amount and payer.</p>
         </div>
         <div className="text-right">
           <p className="text-[10px] uppercase tracking-wide text-ink-400">Amount Received</p>

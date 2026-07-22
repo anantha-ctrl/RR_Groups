@@ -15,6 +15,10 @@ if ($table === 'funds') {
     $controller = new FundPaymentController($model);
 } elseif ($table === 'handovers') {
     $controller = new HandoverController($model);
+} elseif ($table === 'loans') {
+    $controller = new LoanController($model);
+} elseif ($table === 'profiles') {
+    $controller = new AgentController($model);
 } else {
     $controller = new ResourceController($model);
 }

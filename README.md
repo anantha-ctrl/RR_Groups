@@ -101,8 +101,8 @@ RRGroups/
 │   ├── customers.php        customer create/update (+ optional linked login)
 │   ├── core/                Database, Jwt, Model, QueryParser, Controller, Mailer, Sms
 │   ├── controllers/         AuthController, ResourceController, UserController,
-│   │                        CustomerController, FundController, FundPaymentController,
-│   │                        HandoverController
+│   │                        CustomerController, LoanController, AgentController,
+│   │                        FundController, FundPaymentController, HandoverController
 │   ├── models/              Profile, Customer, Loan, Collection, ChitGroup, ChitMember,
 │   │                        Fund, FundPayment, Handover, …
 │   ├── schema.sql           database + tables + seed accounts
