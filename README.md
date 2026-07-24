@@ -28,8 +28,8 @@ flowchart TD
 
     subgraph Server["⚙️  Backend — PHP 8, framework-free MVC  (Apache :80)"]
         direction TB
-        Entry["Entry points<br/>auth.php · rest.php · customers.php · users.php"]
-        Core["core/ · controllers/ · models/"]
+        Entry["Entry points<br/>auth.php · rest.php · customers.php · users.php · pdf.php"]
+        Core["core/ · controllers/ · models/ · lib/"]
         Entry --> Core
     end
 
@@ -88,6 +88,7 @@ screens within seconds.
 - MySQL 8 via PDO
 - JWT (HS256) auth · bcrypt password hashing
 - Dependency-free SMTP mailer + SMS gateway (Fast2SMS / MSG91) for OTP delivery
+- Dependency-free PDF writer (`lib/Pdf.php`) for server-generated loan documents
 
 ---
 
