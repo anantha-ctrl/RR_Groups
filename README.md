@@ -100,6 +100,8 @@ RRGroups/
 │   ├── rest.php             generic PostgREST-lite CRUD for whitelisted tables
 │   ├── users.php            admin-only user management
 │   ├── customers.php        customer create/update (+ optional linked login)
+│   ├── pdf.php              server-generated PDF documents (loan application)
+│   ├── lib/                 Pdf.php (dependency-free PDF writer) + document builders
 │   ├── core/                Database, Jwt, Model, QueryParser, Controller, Mailer, Sms
 │   ├── controllers/         AuthController, ResourceController, UserController,
 │   │                        CustomerController, CustomerRestController, LoanController,
@@ -370,7 +372,13 @@ GET   /backend/rest.php?table=loans&status=eq.active&order=created_at.desc&limit
 POST  /backend/rest.php?table=loans             body: object | array
 PATCH /backend/rest.php?table=loans&id=eq.<uuid>
 DELETE/backend/rest.php?table=loans&id=eq.<uuid>
+
+GET   /backend/pdf.php?doc=loan_application&loan_id=<uuid>[&download=1]  → application/pdf
 ```
+
+`pdf.php` builds the PDF **server-side** from live database rows (loan + customer +
+company settings) using a small dependency-free writer — the React app only requests it
+(with the Bearer token) and shows/downloads the bytes.
 
 Filters use `column=<op>.<value>` where `op ∈ eq, neq, gt, gte, lt, lte, like, in, is`.
 All `rest.php` requests require a valid `Authorization: Bearer <jwt>` header.
@@ -520,6 +528,15 @@ A summary of everything built so far, grouped by milestone (most foundational fi
   offline QR generator (`qrcodegen.ts`) encoding the receipt no., amount, payer, loan and
   agent for verification (replacing the old placeholder).
 - Removed the **Quick Demo Login** buttons; documented the seeded [login credentials](#login-credentials) instead.
+
+### 15 · Server-side PDF generation
+- Moved the **Loan Application** document from a browser `window.print()` to a real
+  **backend-generated PDF** (`pdf.php` + `lib/Pdf.php`, a dependency-free PDF writer with
+  base-14 fonts, dashed rules, boxes and embedded JPEG photos). The layout matches the
+  React design exactly; data (loan + customer + company settings) is read live from the DB.
+- React now **only calls the API** — `apiGetBlob('pdf.php?doc=loan_application&loan_id=…')`
+  — to **view** (new tab) or **download** the PDF. Access is JWT-guarded: admins/agents get
+  any loan, a customer only their own.
 
 ---
 

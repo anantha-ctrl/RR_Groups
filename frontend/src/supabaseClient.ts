@@ -61,6 +61,17 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   return fetch(`${API_URL}/${path}`, { ...init, headers });
 }
 
+// Fetch a binary document (e.g. a server-generated PDF) with the auth header
+// attached. Returns the Blob so callers can download it or open it in a tab.
+export async function apiGetBlob(path: string): Promise<Blob> {
+  const res = await apiFetch(path);
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || `Request failed (${res.status})`);
+  }
+  return res.blob();
+}
+
 async function parseResult<T>(res: Response): Promise<Result<T>> {
   let body: unknown = null;
   const text = await res.text();
